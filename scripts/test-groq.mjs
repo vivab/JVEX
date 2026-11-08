@@ -6,6 +6,8 @@ if (!key) {
   process.exit(1);
 }
 const model = "openai/gpt-oss-120b";
+const prompt = String(process.env.JVEX_TEST_PROMPT || "").trim().slice(0, 1000) ||
+  "Привет! Представься одним предложением для проверки подключения.";
 const controller = new AbortController();
 const timeout = setTimeout(() => controller.abort(), 40000);
 try {
@@ -23,7 +25,7 @@ try {
       stream: false,
       messages: [
         { role: "system", content: "Ты JVEX, дружелюбный и краткий русскоязычный ИИ-помощник. Ответь одним предложением." },
-        { role: "user", content: "Привет! Представься одним предложением для проверки подключения." },
+        { role: "user", content: prompt },
       ],
     }),
   });
