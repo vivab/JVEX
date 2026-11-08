@@ -1,0 +1,8 @@
+name = "jvex-api"
+main = "src/index.js"
+compatibility_date = "2026-11-01"
+
+[vars]
+ALLOWED_ORIGIN = "https://vivab.github.io"
+
+# API keys must be Cloudflare secrets, never stored in this file.
