@@ -38,6 +38,13 @@ npx wrangler deploy
 
 Полученный адрес Worker введите в настройках JVEX вместе с JVEX_ACCESS_CODE. Проверка работоспособности Worker: GET /api/health должен вернуть ok:true, но это не проверяет работоспособность ключей моделей.
 
+### Запуск Worker прямо с телефона, без терминала
+
+Можно также перейти в GitHub → репозиторий JVEX → Settings → Secrets and variables → Actions и создать секреты:
+\`CLOUDFLARE_API_TOKEN\`, \`CLOUDFLARE_ACCOUNT_ID\`, \`JVEX_ACCESS_CODE\` и хотя бы один из \`GROQ_API_KEY\`, \`OPENROUTER_API_KEY\`, \`GEMINI_API_KEY\`. При необходимости добавьте \`TAVILY_API_KEY\`.
+
+После этого в GitHub → Actions запустите **Deploy JVEX API (manual)** → **Run workflow**. Этот workflow проверяет код и развернёт Worker с секретами из GitHub. Токен Cloudflare должен иметь права на Workers Scripts. Запускайте его только после настройки всех секретов.
+
 ## 3. Настройка моделей
 
 Параметры окружения Cloudflare Worker (необязательные):
