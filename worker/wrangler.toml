@@ -4,5 +4,17 @@ compatibility_date = "2026-11-01"
 
 [vars]
 ALLOWED_ORIGIN = "https://vivab.github.io"
+MAX_GLOBAL_CHAT = "300"
+MAX_GLOBAL_CODE = "45"
+MAX_REQUESTS_PER_MINUTE = "4"
 
 # API keys must be Cloudflare secrets, never stored in this file.
+
+# Persistent, atomic, server-side anonymous Free quotas; supported on Workers Free.
+[[durable_objects.bindings]]
+name = "QUOTA_GUARD"
+class_name = "QuotaGuard"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["QuotaGuard"]
