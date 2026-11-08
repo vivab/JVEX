@@ -24,6 +24,7 @@ jobs:
           test -s index.html
           test -s worker/src/index.js
           node --check worker/src/index.js
+          node --test worker/test/index.test.js
           python3 - <<'PY'
           from pathlib import Path
           s = Path("index.html").read_text()
