@@ -1,0 +1,24 @@
+name: Test JVEX Groq API
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/groq-test.yml'
+      - 'scripts/test-groq.mjs'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: groq-test
+  cancel-in-progress: false
+jobs:
+  groq-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check JavaScript syntax
+        run: node --check scripts/test-groq.mjs
+      - name: Test Groq with repository secret
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: node scripts/test-groq.mjs
