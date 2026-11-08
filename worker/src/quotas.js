@@ -33,7 +33,7 @@ export class QuotaGuard {
     this.sql.exec("CREATE TABLE IF NOT EXISTS usage (day TEXT NOT NULL, subject TEXT NOT NULL, lane TEXT NOT NULL, hits INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(day,subject,lane))");
     this.lastCleanup="";
   }
-  row(day,subject,lane){return Number(this.sql.exec("SELECT hits FROM usage WHERE day = ? AND subject = ? AND lane = ?",day,subject,lane).one()?.hits||0)}
+  row(day,subject,lane){return Number(this.sql.exec("SELECT hits FROM usage WHERE day = ? AND subject = ? AND lane = ?",day,subject,lane).toArray()[0]?.hits||0)}
   increment(day,subject,lane){
     this.sql.exec("INSERT INTO usage(day,subject,lane,hits) VALUES(?,?,?,1) ON CONFLICT(day,subject,lane) DO UPDATE SET hits = hits + 1",day,subject,lane);
   }
