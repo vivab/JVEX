@@ -1,8 +1,9 @@
 /**
- * JVEX anonymous quotas (Cloudflare SQLite Durable Object).
- * Free is the only active plan until account identity and payments exist.
- * All counters use UTC dates and are enforced server-side.
+ * JVEX public anonymous Free quotas, enforced atomically in a SQLite Durable Object.
+ * Chat: UTC day. Code: five hours from first code request in that session.
+ * The global provider-safety quota is separate and continues to reset daily.
  */
+export const CODE_WINDOW_MS = 5 * 60 * 60 * 1000;
 export const PLANS = Object.freeze([
   {id:"free",title:"JVEX Free",chat:20,code:3,active:true},
   {id:"plus",title:"JVEX Plus",chat:100,code:20,active:false},
@@ -12,76 +13,113 @@ export const PLANS = Object.freeze([
 ]);
 export const FREE_PLAN = PLANS[0];
 export const DEFAULT_GLOBAL = Object.freeze({chat:300,code:45});
-export const DEFAULT_MINUTE_LIMIT=4;
+export const DEFAULT_MINUTE_LIMIT = 4;
 export function utcDay(date=new Date()){return date.toISOString().slice(0,10)}
+export function nextUtcMidnight(date=new Date()){
+  const time=Date.UTC(date.getUTCFullYear(),date.getUTCMonth(),date.getUTCDate()+1);
+  return new Date(time).toISOString();
+}
 export function quotaVerdict(used,globalUsed,minuteUsed,lane,globalMax,minuteMax=DEFAULT_MINUTE_LIMIT){
-  const per=FREE_PLAN[lane];
   if(!["chat","code"].includes(lane))return {allowed:false,reason:"invalid"};
-  if(used>=per)return {allowed:false,reason:"user",retryAfter:60};
-  if(globalUsed>=globalMax)return {allowed:false,reason:"global",retryAfter:300};
-  if(minuteUsed>=minuteMax)return {allowed:false,reason:"burst",retryAfter:60};
+  if(used>=FREE_PLAN[lane])return {allowed:false,reason:"user"};
+  if(globalUsed>=globalMax)return {allowed:false,reason:"global"};
+  if(minuteUsed>=minuteMax)return {allowed:false,reason:"burst"};
   return {allowed:true};
 }
-function integerLimit(v,fallback){const n=Number(v);return Number.isSafeInteger(n)&&n>0&&n<100000? n:fallback}
-function response(data,status=200){return new Response(JSON.stringify(data),{status,headers:{"Content-Type":"application/json"}})}
-/* One named object owns the global and per-IP counters so concurrent requests cannot overspend.
-   SQL transactions are synchronous, atomic and persisted in SQLite storage. */
+function limit(input,fallback){const n=Number(input);return Number.isSafeInteger(n)&&n>0&&n<=100000?n:fallback}
+function reply(payload,status=200){return new Response(JSON.stringify(payload),{status,headers:{"Content-Type":"application/json"}})}
 export class QuotaGuard {
   constructor(ctx,env){
-    this.ctx=ctx;this.env=env;
-    this.sql=ctx.storage.sql;
+    this.ctx=ctx;this.env=env;this.sql=ctx.storage.sql;
     this.sql.exec("CREATE TABLE IF NOT EXISTS usage (day TEXT NOT NULL, subject TEXT NOT NULL, lane TEXT NOT NULL, hits INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(day,subject,lane))");
-    this.lastCleanup="";
+    this.sql.exec("CREATE TABLE IF NOT EXISTS code_windows (subject TEXT PRIMARY KEY, started_ms INTEGER NOT NULL, hits INTEGER NOT NULL DEFAULT 0)");
+    this.cleanupDay="";
   }
-  row(day,subject,lane){return Number(this.sql.exec("SELECT hits FROM usage WHERE day = ? AND subject = ? AND lane = ?",day,subject,lane).toArray()[0]?.hits||0)}
-  increment(day,subject,lane){
-    this.sql.exec("INSERT INTO usage(day,subject,lane,hits) VALUES(?,?,?,1) ON CONFLICT(day,subject,lane) DO UPDATE SET hits = hits + 1",day,subject,lane);
+  count(day,subject,lane){
+    return Number(this.sql.exec("SELECT hits FROM usage WHERE day=? AND subject=? AND lane=?",day,subject,lane).toArray()[0]?.hits||0);
   }
-  refund(day,subject,lane){
-    this.sql.exec("UPDATE usage SET hits = MAX(0,hits - 1) WHERE day=? AND subject=? AND lane=?",day,subject,lane);
+  bump(day,subject,lane){
+    this.sql.exec("INSERT INTO usage(day,subject,lane,hits) VALUES(?,?,?,1) ON CONFLICT(day,subject,lane) DO UPDATE SET hits=hits+1",day,subject,lane);
   }
-  snapshot(day,id){
+  subtract(day,subject,lane){
+    this.sql.exec("UPDATE usage SET hits=MAX(0,hits-1) WHERE day=? AND subject=? AND lane=?",day,subject,lane);
+  }
+  codeWindow(subject,now){
+    const row=this.sql.exec("SELECT started_ms,hits FROM code_windows WHERE subject=?",subject).toArray()[0];
+    if(!row||now>=Number(row.started_ms)+CODE_WINDOW_MS)return null;
+    return {started:Number(row.started_ms),hits:Number(row.hits)};
+  }
+  rollover(subject,now){
+    this.sql.exec("INSERT INTO code_windows(subject,started_ms,hits) VALUES(?,?,1) ON CONFLICT(subject) DO UPDATE SET started_ms=excluded.started_ms,hits=1",subject,now);
+  }
+  incrementCode(subject){
+    this.sql.exec("UPDATE code_windows SET hits=hits+1 WHERE subject=?",subject);
+  }
+  refundCode(subject,now){
+    const window=this.codeWindow(subject,now);
+    if(window){
+      if(window.hits<=1)this.sql.exec("DELETE FROM code_windows WHERE subject=?",subject);
+      else this.sql.exec("UPDATE code_windows SET hits=hits-1 WHERE subject=?",subject);
+    }
+  }
+  snapshot(day,id,now){
+    const code=this.codeWindow(id,now),chatUsed=this.count(day,id,"chat"),codeUsed=code?.hits||0;
     return {
-      plan:"free",
-      date:day,
-      limits:{chat:FREE_PLAN.chat,code:FREE_PLAN.code},
-      used:{chat:this.row(day,id,"chat"),code:this.row(day,id,"code")},
+      plan:"free",date:day,limits:{chat:FREE_PLAN.chat,code:FREE_PLAN.code},
+      periods:{chat:"day",code:"5h"},
+      used:{chat:chatUsed,code:codeUsed},
+      remaining:{chat:Math.max(0,FREE_PLAN.chat-chatUsed),code:Math.max(0,FREE_PLAN.code-codeUsed)},
+      resetAt:{chat:nextUtcMidnight(new Date(now)),code:code?new Date(code.started+CODE_WINDOW_MS).toISOString():null},
       globalRemaining:{
-        chat:Math.max(0,integerLimit(this.env.MAX_GLOBAL_CHAT,DEFAULT_GLOBAL.chat)-this.row(day,"__global__","chat")),
-        code:Math.max(0,integerLimit(this.env.MAX_GLOBAL_CODE,DEFAULT_GLOBAL.code)-this.row(day,"__global__","code"))
-      },
-      resetAt:new Date(Date.parse(day+"T00:00:00Z")+86400000).toISOString()
+        chat:Math.max(0,limit(this.env.MAX_GLOBAL_CHAT,DEFAULT_GLOBAL.chat)-this.count(day,"__global__","chat")),
+        code:Math.max(0,limit(this.env.MAX_GLOBAL_CODE,DEFAULT_GLOBAL.code)-this.count(day,"__global__","code"))
+      }
     };
   }
   async fetch(request){
-    if(request.method!=="POST")return response({error:"Not allowed"},405);
-    let input;try{input=await request.json()}catch{return response({error:"Invalid input"},400)}
-    const {action,id,lane}=input||{},day=utcDay();
-    if(!/^[a-f0-9]{64}$/.test(id||""))return response({error:"Invalid identity"},400);
-    if(!["status","reserve","refund"].includes(action))return response({error:"Invalid action"},400);
-    if(action!=="status"&&!["chat","code"].includes(lane))return response({error:"Invalid lane"},400);
-    // Keep at most a short interval of hashed identifiers; no raw IP addresses retained.
-    if(this.lastCleanup!==day){
-      const oldest=utcDay(new Date(Date.parse(day+"T00:00:00Z")-2*86400000));
-      this.sql.exec("DELETE FROM usage WHERE day < ?",oldest);
-      this.lastCleanup=day;
+    if(request.method!=="POST")return reply({error:"Method not allowed"},405);
+    let input;try{input=await request.json()}catch{return reply({error:"Invalid JSON"},400)}
+    const {action,id,lane}=input||{};
+    if(!/^[0-9a-f]{64}$/.test(id||""))return reply({error:"Invalid identity"},400);
+    if(!["status","reserve","refund"].includes(action))return reply({error:"Invalid action"},400);
+    if(action!=="status"&&!["chat","code"].includes(lane))return reply({error:"Invalid lane"},400);
+    const now=Date.now(),day=utcDay(new Date(now)),minute=new Date(now).toISOString().slice(0,16);
+    if(this.cleanupDay!==day){
+      try{
+        const earliest=utcDay(new Date(now-2*86400000));
+        this.sql.exec("DELETE FROM usage WHERE day < ?",earliest);
+        this.sql.exec("DELETE FROM code_windows WHERE started_ms < ?",now-2*CODE_WINDOW_MS);
+        this.cleanupDay=day;
+      }catch{return reply({error:"Quota cleanup failed"},503)}
     }
-    let verdict;
+    let decision;
     try{
-      verdict=this.ctx.storage.transactionSync(()=>{
+      decision=this.ctx.storage.transactionSync(()=>{
         if(action==="status")return {allowed:true};
         if(action==="refund"){
-          this.refund(day,id,lane);this.refund(day,"__global__",lane);
+          if(lane==="code")this.refundCode(id,now);
+          else this.subtract(day,id,"chat");
+          this.subtract(day,"__global__",lane);
           return {allowed:true};
         }
-        const minute=new Date().toISOString().slice(0,16);
-        const globalMax=integerLimit(lane==="chat"?this.env.MAX_GLOBAL_CHAT:this.env.MAX_GLOBAL_CODE,DEFAULT_GLOBAL[lane]);
-        const decision=quotaVerdict(this.row(day,id,lane),this.row(day,"__global__",lane),this.row(day,id,"minute:"+minute),lane,globalMax,integerLimit(this.env.MAX_REQUESTS_PER_MINUTE,DEFAULT_MINUTE_LIMIT));
-        if(!decision.allowed)return decision;
-        this.increment(day,id,lane);this.increment(day,"__global__",lane);this.increment(day,id,"minute:"+minute);
+        const window=lane==="code"?this.codeWindow(id,now):null;
+        const used=lane==="code"?(window?.hits||0):this.count(day,id,"chat");
+        const globalLimit=limit(lane==="code"?this.env.MAX_GLOBAL_CODE:this.env.MAX_GLOBAL_CHAT,DEFAULT_GLOBAL[lane]);
+        const minLimit=limit(this.env.MAX_REQUESTS_PER_MINUTE,DEFAULT_MINUTE_LIMIT);
+        const verdict=quotaVerdict(used,this.count(day,"__global__",lane),this.count(day,id,"minute:"+minute),lane,globalLimit,minLimit);
+        if(!verdict.allowed){
+          const wait=verdict.reason==="user"&&lane==="code"&&window?window.started+CODE_WINDOW_MS-now:
+            verdict.reason==="burst"?60000:Date.parse(nextUtcMidnight(new Date(now)))-now;
+          return {...verdict,retryAfter:Math.max(1,Math.ceil(wait/1000))};
+        }
+        if(lane==="code"){
+          if(window)this.incrementCode(id);else this.rollover(id,now);
+        }else this.bump(day,id,"chat");
+        this.bump(day,"__global__",lane);
+        this.bump(day,id,"minute:"+minute);
         return {allowed:true};
       });
-    }catch(e){return response({error:"Quota storage failed"},503)}
-    return response({...verdict,...this.snapshot(day,id)});
+    }catch{return reply({error:"Quota transaction failed"},503)}
+    return reply({...decision,...this.snapshot(day,id,now)});
   }
 }
