@@ -1,15 +1,172 @@
-import { test } from "node:test";
+import {test} from "node:test";
 import assert from "node:assert/strict";
 import app from "../src/index.js";
-const env={JVEX_ACCESS_CODE:"test-only",ALLOWED_ORIGIN:"https://vivab.github.io"};
-const messages=[{role:"user",content:"Привет, JVEX"}];
-const make=(body=messages,keys={},code="test-only")=>app.fetch(new Request("https://jvex-api.example.workers.dev/api/chat",{method:"POST",headers:{"Content-Type":"application/json","X-JVEX-Access":code,Origin:"https://vivab.github.io"},body:JSON.stringify({messages:body,search:"off"})}),{...env,...keys});
-const mock=async(fn,work)=>{const original=globalThis.fetch;globalThis.fetch=fn;try{return await work()}finally{globalThis.fetch=original}};
-test("health endpoint reports status without exposing credentials",async()=>{const r=await app.fetch(new Request("https://x/api/health"),{...env,GROQ_API_KEY:"private"});const data=await r.json();assert.equal(data.ok,true);assert.equal(data.configured,true);assert.equal(JSON.stringify(data).includes("private"),false)});
-test("CORS preflight authorizes configured GitHub Pages origin",async()=>{const r=await app.fetch(new Request("https://x/api/chat",{method:"OPTIONS",headers:{Origin:"https://vivab.github.io"}}),env);assert.equal(r.status,204);assert.equal(r.headers.get("Access-Control-Allow-Origin"),"https://vivab.github.io")});
-test("authentication rejects wrong code",async()=>{const r=await make(messages,{GROQ_API_KEY:"fake"},"wrong");assert.equal(r.status,401);assert.match((await r.json()).error,/код/i)});
-test("configuration rejects absence of AI keys",async()=>{const r=await make();assert.equal(r.status,503);assert.match((await r.json()).error,/ключ/i)});
-test("Groq replies with model metadata and stored conversation",async()=>{let sent;await mock(async(url,options)=>{assert.match(String(url),/groq\.com/);sent=JSON.parse(options.body);return Response.json({model:"openai/gpt-oss-120b",choices:[{message:{content:"Добрый день"}}]})},async()=>{const r=await make([{role:"user",content:"Привет"},{role:"assistant",content:"Здравствуйте"},{role:"user",content:"Ещё вопрос"}],{GROQ_API_KEY:"fake"});assert.equal(r.status,200);assert.match((await r.json()).answer,/Добрый/)});assert.equal(sent.messages.filter(x=>x.role==="user").length,2)});
-test("fallback uses OpenRouter after Groq rate limit",async()=>{let seen=[];await mock(async(url)=>{seen.push(String(url));if(String(url).includes("groq.com"))return Response.json({error:{message:"rate limit"}},{status:429});return Response.json({model:"free-model",choices:[{message:{content:"Резерв работает"}}]})},async()=>{const r=await make(messages,{GROQ_API_KEY:"fake",OPENROUTER_API_KEY:"fake"});let data=await r.json();assert.equal(r.status,200);assert.match(data.answer,/Резерв/);assert.match(data.model,/OpenRouter/)});assert.equal(seen.length,2)});
-test("vision messages are routed to Gemini with base64 attachment",async()=>{let requestBody;await mock(async(url,options)=>{assert.match(String(url),/generativelanguage/);requestBody=JSON.parse(options.body);return Response.json({candidates:[{content:{parts:[{text:"Это фотография"}]}}]})},async()=>{const r=await make([{role:"user",content:"Что здесь?",image:"data:image/jpeg;base64,SGVsbG8="}],{GEMINI_API_KEY:"fake"});assert.equal(r.status,200);assert.equal((await r.json()).answer,"Это фотография")});assert.equal(requestBody.contents[0].parts.length,2);assert.equal(requestBody.contents[0].parts[1].inline_data.mime_type,"image/jpeg")});
-test("Gemini grounding is attempted first for fresh questions",async()=>{let first;await mock(async(url,options)=>{first=String(url);let body=JSON.parse(options.body);assert.ok(body.tools?.[0]?.google_search);return Response.json({candidates:[{content:{parts:[{text:"Текущие сведения"}]},groundingMetadata:{groundingChunks:[{web:{uri:"https://example.org/news",title:"Example"}}]}}]})},async()=>{const r=await app.fetch(new Request("https://x/api/chat",{method:"POST",headers:{"Content-Type":"application/json","X-JVEX-Access":"test-only"},body:JSON.stringify({messages:[{role:"user",content:"Какие новости сегодня?"}],search:"auto"})}),{...env,GEMINI_API_KEY:"fake",GROQ_API_KEY:"fake"});let data=await r.json();assert.equal(r.status,200);assert.equal(data.searched,true);assert.equal(data.sources[0].url,"https://example.org/news")});assert.match(first,/generativelanguage/)});
+import {QuotaGuard,PLANS,CODE_WINDOW_MS,quotaVerdict} from "../src/quotas.js";
+const person="a".repeat(64);
+const baseEnv={ALLOWED_ORIGIN:"https://vivab.github.io",QUOTA_SALT:"test-unique-salt-for-quota"};
+function mockQuota(){
+  const counts={chat:0,code:0};
+  return {
+    counts,
+    idFromName:()=>({}),
+    get:()=>({fetch:async(_url,options)=>{
+      const {action,lane}=JSON.parse(options.body);
+      if(action==="reserve"&&counts[lane]>=({chat:20,code:3}[lane]))return Response.json({allowed:false,reason:"user",remaining:{chat:20-counts.chat,code:3-counts.code},limits:{chat:20,code:3}});
+      if(action==="reserve")counts[lane]++;
+      if(action==="refund")counts[lane]=Math.max(0,counts[lane]-1);
+      return Response.json({allowed:true,limits:{chat:20,code:3},remaining:{chat:20-counts.chat,code:3-counts.code},used:{...counts},resetAt:{chat:"2026-11-10T00:00:00Z",code:null}});
+    }})
+  };
+}
+const useEnv=(keys={},quota=mockQuota())=>({...baseEnv,QUOTA_GUARD:quota,...keys});
+const request=(messages,extra={})=>new Request("https://jvex-api.example.workers.dev/api/chat",{method:"POST",headers:{"Content-Type":"application/json","CF-Connecting-IP":"203.0.113.8",Origin:"https://vivab.github.io"},body:JSON.stringify({messages,search:"off",...extra})});
+const msgs=[{role:"user",content:"Привет JVEX"}];
+async function fakeFetch(handler,task){const old=globalThis.fetch;globalThis.fetch=handler;try{return await task()}finally{globalThis.fetch=old}}
+test("health does not reveal API keys",async()=>{
+  const r=await app.fetch(new Request("https://x/api/health"),useEnv({GROQ_API_KEY:"SECRET"}));
+  assert.equal(r.status,200);
+  let data=await r.json();assert.equal(data.ok,true);assert.equal(data.configured,true);assert.equal(JSON.stringify(data).includes("SECRET"),false);
+});
+test("CORS origin is restricted to configured GitHub Pages",async()=>{
+  const r=await app.fetch(new Request("https://x/api/chat",{method:"OPTIONS",headers:{Origin:"https://vivab.github.io"}}),useEnv());
+  assert.equal(r.status,204);
+  assert.equal(r.headers.get("Access-Control-Allow-Origin"),"https://vivab.github.io");
+});
+test("plans are public but only Free is active",async()=>{
+  const r=await app.fetch(new Request("https://x/api/plans"),useEnv());
+  assert.equal(r.status,200);const data=await r.json();
+  assert.deepEqual(data.plans.map(x=>x.id),["free","plus","pro","premium","code"]);
+  assert.equal(data.plans.filter(x=>x.active).length,1);
+});
+test("missing Cloudflare identity fails closed",async()=>{
+  const r=await app.fetch(new Request("https://x/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({messages:msgs})}),useEnv({GROQ_API_KEY:"test"}));
+  assert.equal(r.status,503);
+});
+test("unauthenticated usage endpoint works with IP-derived identity",async()=>{
+  const q=mockQuota();
+  const r=await app.fetch(new Request("https://x/api/usage",{headers:{"CF-Connecting-IP":"203.0.113.8"}}),useEnv({},q));
+  assert.equal(r.status,200);
+  assert.equal((await r.json()).remaining.code,3);
+});
+test("no model key fails without consuming quota",async()=>{
+  const q=mockQuota(),r=await app.fetch(request(msgs),useEnv({},q));
+  assert.equal(r.status,503);assert.equal(q.counts.chat,0);
+});
+test("Groq responds and receives complete message history",async()=>{
+  const q=mockQuota();let sent;
+  await fakeFetch(async(url,opts)=>{assert.match(String(url),/groq/);sent=JSON.parse(opts.body);return Response.json({model:"openai/gpt-oss-120b",choices:[{message:{content:"Ответ JVEX"}}]})},async()=>{
+    const input=[{role:"user",content:"Hello"},{role:"assistant",content:"Hi"},{role:"user",content:"Continue"}];
+    const r=await app.fetch(request(input),useEnv({GROQ_API_KEY:"fake"},q));
+    assert.equal(r.status,200);assert.match((await r.json()).answer,/Ответ/);
+  });
+  assert.equal(sent.messages.filter(m=>m.role==="user").length,2);
+  assert.equal(q.counts.chat,1);
+});
+test("fallback after 429 moves to OpenRouter and preserves quota",async()=>{
+  const q=mockQuota();const urls=[];
+  await fakeFetch(async url=>{urls.push(String(url));return String(url).includes("groq")?
+    Response.json({error:{message:"rate limit"}},{status:429}):
+    Response.json({model:"free",choices:[{message:{content:"Готово"}}]});},async()=>{
+    const r=await app.fetch(request(msgs),useEnv({GROQ_API_KEY:"fake",OPENROUTER_API_KEY:"fake"},q));
+    assert.equal(r.status,200);assert.match((await r.json()).model,/OpenRouter/);
+  });
+  assert.equal(urls.length,2);assert.equal(q.counts.chat,1);
+});
+test("photo enters Gemini as inline image",async()=>{
+  let payload;
+  await fakeFetch(async(url,options)=>{payload=JSON.parse(options.body);return Response.json({candidates:[{content:{parts:[{text:"Фотография"}]}}]})},async()=>{
+    const r=await app.fetch(request([{role:"user",content:"Что здесь?",image:"data:image/jpeg;base64,SGVsbG8="}]),useEnv({GEMINI_API_KEY:"fake"}));
+    assert.equal(r.status,200);assert.equal((await r.json()).answer,"Фотография");
+  });
+  assert.equal(payload.contents[0].parts[1].inline_data.mime_type,"image/jpeg");
+});
+test("Gemini grounding first for time-sensitive search",async()=>{
+  let first;
+  await fakeFetch(async(url,options)=>{first=String(url);assert.ok(JSON.parse(options.body).tools[0].google_search);return Response.json({candidates:[{content:{parts:[{text:"Новости"}]},groundingMetadata:{groundingChunks:[{web:{uri:"https://example.com",title:"Новости"}}]}}]})},async()=>{
+    const r=await app.fetch(request([{role:"user",content:"Новости сегодня"}],{search:"auto"}),useEnv({GEMINI_API_KEY:"fake",GROQ_API_KEY:"fake"}));
+    assert.equal(r.status,200);assert.equal((await r.json()).searched,true);
+  });
+  assert.match(first,/generativelanguage/);
+});
+test("Code lane uses separate quota",async()=>{
+  const q=mockQuota();await fakeFetch(async()=>Response.json({model:"free",choices:[{message:{content:"код"}}]}),async()=>{
+    const r=await app.fetch(request(msgs,{mode:"code"}),useEnv({GROQ_API_KEY:"fake"},q));
+    assert.equal(r.status,200);
+  });assert.equal(q.counts.code,1);assert.equal(q.counts.chat,0);
+});
+test("Free plan respects 20 chat and 3 code slots",()=>{
+  assert.equal(quotaVerdict(20,0,0,"chat",300).reason,"user");
+  assert.equal(quotaVerdict(3,0,0,"code",45).reason,"user");
+  assert.equal(quotaVerdict(2,0,0,"code",45).allowed,true);
+  assert.equal(CODE_WINDOW_MS,18000000);
+  assert.equal(PLANS.length,5);
+});
+class SqlMock {
+  constructor(){this.usage=new Map();this.windows=new Map()}
+  exec(sql,...args){
+    if(sql.startsWith("CREATE TABLE"))return {toArray:()=>[]};
+    if(sql.startsWith("SELECT hits FROM usage"))return {toArray:()=>[{hits:this.usage.get(args.join("|"))||0}]};
+    if(sql.startsWith("SELECT started_ms,hits FROM code_windows")){
+      const w=this.windows.get(args[0]);return {toArray:()=>w?[{started_ms:w.start,hits:w.hits}]:[]};
+    }
+    if(sql.startsWith("INSERT INTO usage")){
+      const k=args.slice(0,3).join("|");this.usage.set(k,(this.usage.get(k)||0)+1);return {toArray:()=>[]};
+    }
+    if(sql.startsWith("UPDATE usage SET hits=MAX")){
+      const k=args.join("|");this.usage.set(k,Math.max(0,(this.usage.get(k)||0)-1));return {toArray:()=>[]};
+    }
+    if(sql.startsWith("INSERT INTO code_windows")){
+      this.windows.set(args[0],{start:args[1],hits:1});return {toArray:()=>[]};
+    }
+    if(sql.startsWith("UPDATE code_windows SET hits=hits+1")){
+      this.windows.get(args[0]).hits++;return {toArray:()=>[]};
+    }
+    if(sql.startsWith("UPDATE code_windows SET hits=hits-1")){
+      this.windows.get(args[0]).hits--;return {toArray:()=>[]};
+    }
+    if(sql.startsWith("DELETE FROM code_windows WHERE subject=")){
+      this.windows.delete(args[0]);return {toArray:()=>[]};
+    }
+    if(sql.startsWith("DELETE FROM code_windows WHERE started_ms")){
+      for(const [id,w] of this.windows)if(w.start<args[0])this.windows.delete(id);
+      return {toArray:()=>[]};
+    }
+    if(sql.startsWith("DELETE FROM usage WHERE day <")){
+      for(const key of this.usage.keys())if(key.split("|")[0]<args[0])this.usage.delete(key);
+      return {toArray:()=>[]};
+    }
+    throw Error("Unknown mock SQL: "+sql);
+  }
+}
+const action=(guard,name,lane)=>guard.fetch(new Request("https://quota.internal/action",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:person,action:name,lane})}));
+test("Code reset is exactly five hours after first successful request, not at midnight",async()=>{
+  const sql=new SqlMock(),ctx={storage:{sql,transactionSync:fn=>fn()}},guard=new QuotaGuard(ctx,{MAX_GLOBAL_CODE:"30"});
+  const original=Date.now,initial=Date.UTC(2026,10,9,22,55);
+  try{
+    Date.now=()=>initial;
+    const first=await (await action(guard,"reserve","code")).json();
+    assert.equal(first.used.code,1);
+    assert.equal(first.resetAt.code,new Date(initial+CODE_WINDOW_MS).toISOString());
+    for(let i=0;i<2;i++)assert.equal((await (await action(guard,"reserve","code")).json()).allowed,true);
+    assert.equal((await (await action(guard,"reserve","code")).json()).reason,"user");
+    Date.now=()=>initial+60*60*1000; // after UTC midnight but not five hours
+    assert.equal((await (await action(guard,"reserve","code")).json()).reason,"user");
+    Date.now=()=>initial+CODE_WINDOW_MS;
+    const refreshed=await (await action(guard,"reserve","code")).json();
+    assert.equal(refreshed.allowed,true);assert.equal(refreshed.used.code,1);
+    assert.equal(refreshed.remaining.code,2);
+  }finally{Date.now=original}
+});
+test("Chat slots reset at UTC midnight independently of Code",async()=>{
+  const sql=new SqlMock(),guard=new QuotaGuard({storage:{sql,transactionSync:fn=>fn()}},{});
+  const original=Date.now,start=Date.UTC(2026,10,9,23,59);
+  try{
+    Date.now=()=>start;
+    await action(guard,"reserve","chat");
+    await action(guard,"reserve","code");
+    Date.now=()=>start+120000;
+    const status=await (await action(guard,"status")).json();
+    assert.equal(status.used.chat,0);
+    assert.equal(status.used.code,1);
+  }finally{Date.now=original}
+});
