@@ -1,0 +1,34 @@
+name: JVEX live quality evaluation
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/quality-eval.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  statuses: write
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 16
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run four real AI tasks
+        run: node scripts/quality-eval.mjs
+      - name: Upload model responses and generated games
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jvex-quality-results
+          path: quality-results/
+          if-no-files-found: warn
+      - name: Report evaluation status
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          JOB_RESULT: ${{ job.status }}
+        run: |
+          if [ "$JOB_RESULT" = "success" ]; then state=success; else state=failure; fi
+          jq -nc --arg state "$state" --arg target "https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" '{state:$state,context:"JVEX / Live QA",description:"Tanks, Snake, math, grammar",target_url:$target}' > /tmp/jvex-quality-status.json
+          curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" -H "Content-Type: application/json" --data-binary @/tmp/jvex-quality-status.json "https://api.github.com/repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" > /dev/null
