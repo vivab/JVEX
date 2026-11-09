@@ -19,10 +19,10 @@ export function nextUtcMidnight(date=new Date()){
   const time=Date.UTC(date.getUTCFullYear(),date.getUTCMonth(),date.getUTCDate()+1);
   return new Date(time).toISOString();
 }
-export function quotaVerdict(used,globalUsed,minuteUsed,lane,globalMax,minuteMax=DEFAULT_MINUTE_LIMIT){
+export function quotaVerdict(used,globalUsed,minuteUsed,lane,globalMax,minuteMax=DEFAULT_MINUTE_LIMIT,units=1){
   if(!["chat","code"].includes(lane))return {allowed:false,reason:"invalid"};
-  if(used>=FREE_PLAN[lane])return {allowed:false,reason:"user"};
-  if(globalUsed>=globalMax)return {allowed:false,reason:"global"};
+  if(used+units>FREE_PLAN[lane])return {allowed:false,reason:"user"};
+  if(globalUsed+units>globalMax)return {allowed:false,reason:"global"};
   if(minuteUsed>=minuteMax)return {allowed:false,reason:"burst"};
   return {allowed:true};
 }
@@ -38,28 +38,28 @@ export class QuotaGuard {
   count(day,subject,lane){
     return Number(this.sql.exec("SELECT hits FROM usage WHERE day=? AND subject=? AND lane=?",day,subject,lane).toArray()[0]?.hits||0);
   }
-  bump(day,subject,lane){
-    this.sql.exec("INSERT INTO usage(day,subject,lane,hits) VALUES(?,?,?,1) ON CONFLICT(day,subject,lane) DO UPDATE SET hits=hits+1",day,subject,lane);
+  bump(day,subject,lane,units=1){
+    this.sql.exec("INSERT INTO usage(day,subject,lane,hits) VALUES(?,?,?,?) ON CONFLICT(day,subject,lane) DO UPDATE SET hits=hits+excluded.hits",day,subject,lane,units);
   }
-  subtract(day,subject,lane){
-    this.sql.exec("UPDATE usage SET hits=MAX(0,hits-1) WHERE day=? AND subject=? AND lane=?",day,subject,lane);
+  subtract(day,subject,lane,units=1){
+    this.sql.exec("UPDATE usage SET hits=MAX(0,hits-?) WHERE day=? AND subject=? AND lane=?",units,day,subject,lane);
   }
   codeWindow(subject,now){
     const row=this.sql.exec("SELECT started_ms,hits FROM code_windows WHERE subject=?",subject).toArray()[0];
     if(!row||now>=Number(row.started_ms)+CODE_WINDOW_MS)return null;
     return {started:Number(row.started_ms),hits:Number(row.hits)};
   }
-  rollover(subject,now){
-    this.sql.exec("INSERT INTO code_windows(subject,started_ms,hits) VALUES(?,?,1) ON CONFLICT(subject) DO UPDATE SET started_ms=excluded.started_ms,hits=1",subject,now);
+  rollover(subject,now,units=1){
+    this.sql.exec("INSERT INTO code_windows(subject,started_ms,hits) VALUES(?,?,?) ON CONFLICT(subject) DO UPDATE SET started_ms=excluded.started_ms,hits=excluded.hits",subject,now,units);
   }
-  incrementCode(subject){
-    this.sql.exec("UPDATE code_windows SET hits=hits+1 WHERE subject=?",subject);
+  incrementCode(subject,units=1){
+    this.sql.exec("UPDATE code_windows SET hits=hits+? WHERE subject=?",units,subject);
   }
-  refundCode(subject,now){
+  refundCode(subject,now,units=1){
     const window=this.codeWindow(subject,now);
     if(window){
-      if(window.hits<=1)this.sql.exec("DELETE FROM code_windows WHERE subject=?",subject);
-      else this.sql.exec("UPDATE code_windows SET hits=hits-1 WHERE subject=?",subject);
+      if(window.hits<=units)this.sql.exec("DELETE FROM code_windows WHERE subject=?",subject);
+      else this.sql.exec("UPDATE code_windows SET hits=MAX(0,hits-?) WHERE subject=?",units,subject);
     }
   }
   snapshot(day,id,now){
@@ -80,6 +80,8 @@ export class QuotaGuard {
     if(request.method!=="POST")return reply({error:"Method not allowed"},405);
     let input;try{input=await request.json()}catch{return reply({error:"Invalid JSON"},400)}
     const {action,id,lane}=input||{};
+    const units=action==="status"?1:Number(input.units||1);
+    if(!Number.isSafeInteger(units)||units<1||units>3)return reply({error:"Invalid cost units"},400);
     if(!/^[0-9a-f]{64}$/.test(id||""))return reply({error:"Invalid identity"},400);
     if(!["status","reserve","refund"].includes(action))return reply({error:"Invalid action"},400);
     if(action!=="status"&&!["chat","code"].includes(lane))return reply({error:"Invalid lane"},400);
@@ -97,29 +99,29 @@ export class QuotaGuard {
       decision=this.ctx.storage.transactionSync(()=>{
         if(action==="status")return {allowed:true};
         if(action==="refund"){
-          if(lane==="code")this.refundCode(id,now);
-          else this.subtract(day,id,"chat");
-          this.subtract(day,"__global__",lane);
+          if(lane==="code")this.refundCode(id,now,units);
+          else this.subtract(day,id,"chat",units);
+          this.subtract(day,"__global__",lane,units);
           return {allowed:true};
         }
         const window=lane==="code"?this.codeWindow(id,now):null;
         const used=lane==="code"?(window?.hits||0):this.count(day,id,"chat");
         const globalLimit=limit(lane==="code"?this.env.MAX_GLOBAL_CODE:this.env.MAX_GLOBAL_CHAT,DEFAULT_GLOBAL[lane]);
         const minLimit=limit(this.env.MAX_REQUESTS_PER_MINUTE,DEFAULT_MINUTE_LIMIT);
-        const verdict=quotaVerdict(used,this.count(day,"__global__",lane),this.count(day,id,"minute:"+minute),lane,globalLimit,minLimit);
+        const verdict=quotaVerdict(used,this.count(day,"__global__",lane),this.count(day,id,"minute:"+minute),lane,globalLimit,minLimit,units);
         if(!verdict.allowed){
           const wait=verdict.reason==="user"&&lane==="code"&&window?window.started+CODE_WINDOW_MS-now:
             verdict.reason==="burst"?60000:Date.parse(nextUtcMidnight(new Date(now)))-now;
           return {...verdict,retryAfter:Math.max(1,Math.ceil(wait/1000))};
         }
         if(lane==="code"){
-          if(window)this.incrementCode(id);else this.rollover(id,now);
-        }else this.bump(day,id,"chat");
-        this.bump(day,"__global__",lane);
-        this.bump(day,id,"minute:"+minute);
+          if(window)this.incrementCode(id,units);else this.rollover(id,now,units);
+        }else this.bump(day,id,"chat",units);
+        this.bump(day,"__global__",lane,units);
+        this.bump(day,id,"minute:"+minute,1);
         return {allowed:true};
       });
     }catch{return reply({error:"Quota transaction failed"},503)}
-    return reply({...decision,...this.snapshot(day,id,now)});
+    return reply({...decision,cost:units,...this.snapshot(day,id,now)});
   }
 }
