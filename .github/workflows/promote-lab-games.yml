@@ -4,6 +4,7 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/promote-lab-games.yml'
+      - 'scripts/promote-lab-games.mjs'
   workflow_dispatch:
 permissions:
   contents: write
