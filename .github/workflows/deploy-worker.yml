@@ -1,8 +1,13 @@
 name: Deploy JVEX API (manual)
 on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/deploy-worker.yml'
   workflow_dispatch:
 permissions:
   contents: read
+  statuses: write
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -45,3 +50,19 @@ jobs:
               printf '%s' "$value" | npx --yes wrangler@4 secret put "$secret" --name jvex-api
             fi
           done
+      - name: Report Cloudflare deployment outcome
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          JOB_RESULT: ${{ job.status }}
+        run: |
+          if [ "$JOB_RESULT" = "success" ]; then state=success; else state=failure; fi
+          jq -nc --arg state "$state" \
+            --arg target "https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            '{state:$state,context:"JVEX / API deployment",description:"Cloudflare API deployment",target_url:$target}' > /tmp/deploy-status.json
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Content-Type: application/json" \
+            --data-binary @/tmp/deploy-status.json \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" > /dev/null
