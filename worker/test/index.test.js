@@ -190,8 +190,8 @@ test("JVEX Code ignores arbitrary URLs and fake github hostnames",()=>{
 });
 
 test("Groq auto fallback orders text-capable models by task",()=>{
- assert.deepEqual(groqCandidates("chat","auto"),["openai/gpt-oss-20b","openai/gpt-oss-120b","qwen/qwen3.8-27b"]);
- assert.deepEqual(groqCandidates("code","auto"),["openai/gpt-oss-120b","qwen/qwen3.8-27b","openai/gpt-oss-20b"]);
+ assert.deepEqual(groqCandidates("chat","auto"),["openai/gpt-oss-20b","qwen/qwen3.8-27b","openai/gpt-oss-120b"]);
+ assert.deepEqual(groqCandidates("code","auto"),["qwen/qwen3.8-27b","openai/gpt-oss-120b","openai/gpt-oss-20b"]);
  assert.equal(groqCandidates("chat","qwen/qwen3.8-27b")[0],"qwen/qwen3.8-27b");
  assert.equal(groqCandidates("chat","untrusted-paid-model")[0],"openai/gpt-oss-20b");
 });
@@ -205,7 +205,7 @@ test("Groq 429 falls back to another Groq model before using other providers",as
    const r=await app.fetch(request(msgs),useEnv({GROQ_API_KEY:"fake"}));
    assert.equal(r.status,200);assert.match((await r.json()).answer,/Fallback model/);
  });
- assert.deepEqual(tried,["openai/gpt-oss-20b","openai/gpt-oss-120b"]);
+ assert.deepEqual(tried,["openai/gpt-oss-20b","qwen/qwen3.8-27b"]);
 });
 
 test("Complexity charges are predictable and task-specific",()=>{
@@ -252,3 +252,49 @@ test("SQLite quota rejects a three-unit task when only two remain",async()=>{
  }finally{Date.now=old}
 });
 
+
+test("Code auto mode sends its first real request to Qwen 3.8",async()=>{
+ const seen=[];
+ await fakeFetch(async(url,options)=>{
+   const data=JSON.parse(options.body);seen.push({url:String(url),model:data.model});
+   return Response.json({model:data.model,choices:[{message:{content:"Готовый код для 2D игры"}}]});
+ },async()=>{
+   const r=await app.fetch(request([{role:"user",content:"Сделай игру танки"}],{mode:"code",groqModel:"auto"}),useEnv({GROQ_API_KEY:"fake"}));
+   assert.equal(r.status,200);
+   assert.match((await r.json()).answer,/Готовый код/);
+ });
+ assert.equal(seen[0].model,"qwen/qwen3.8-27b");
+});
+test("Code Qwen rate limit falls back to GPT-OSS 120B",async()=>{
+ const seen=[];
+ await fakeFetch(async(url,options)=>{
+   const data=JSON.parse(options.body);seen.push(data.model);
+   if(seen.length===1)return Response.json({error:{message:"rate limit"}},{status:429});
+   return Response.json({model:data.model,choices:[{message:{content:"Файл создан"}}]});
+ },async()=>{
+   const r=await app.fetch(request([{role:"user",content:"Напиши программу"}],{mode:"code",groqModel:"auto"}),useEnv({GROQ_API_KEY:"fake"}));
+   assert.equal(r.status,200);
+ });
+ assert.deepEqual(seen,["qwen/qwen3.8-27b","openai/gpt-oss-120b"]);
+});
+test("Gemini is offered only when its secret is configured",async()=>{
+ const simple=await app.fetch(new Request("https://example.com/api/health"),useEnv({GROQ_API_KEY:"test"}));
+ const data=await simple.json();
+ assert.equal(data.providers.groq,true);
+ assert.equal(data.providers.gemini,false);
+ assert.equal(data.routing.code,"qwen/qwen3.8-27b");
+ const enabled=await app.fetch(new Request("https://example.com/api/health"),useEnv({GROQ_API_KEY:"test",GEMINI_API_KEY:"test"}));
+ assert.equal((await enabled.json()).providers.gemini,true);
+});
+test("Gemini preference uses current Flash model and remains server-side",async()=>{
+ let url;
+ await fakeFetch(async(_url,options)=>{
+   url=String(_url);
+   return Response.json({candidates:[{content:{parts:[{text:"Ответ Gemini"}}]}]});
+ },async()=>{
+   const r=await app.fetch(request(msgs,{preference:"gemini"}),useEnv({GEMINI_API_KEY:"fake"}));
+   assert.equal(r.status,200);
+   assert.equal((await r.json()).answer,"Ответ Gemini");
+ });
+ assert.match(url,/gemini-3\.8-flash:generateContent/);
+});
