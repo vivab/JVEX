@@ -4,8 +4,8 @@ compatibility_date = "2026-11-01"
 
 [vars]
 ALLOWED_ORIGIN = "https://vivab.github.io"
-MAX_GLOBAL_CHAT = "300"
-MAX_GLOBAL_CODE = "45"
+MAX_GLOBAL_CHAT = "600"
+MAX_GLOBAL_CODE = "150"
 MAX_REQUESTS_PER_MINUTE = "4"
 
 # API keys must be Cloudflare secrets, never stored in this file.
