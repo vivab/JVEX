@@ -11,7 +11,7 @@ async function verify(){
     const usage=await fetch(base+"/api/usage",{signal:controller.signal});
     if(!usage.ok)throw Error("Quota service failed (HTTP "+usage.status+")");
     const q=await usage.json();
-    if(q.plan!=="free"||q.limits?.chat!==20||q.limits?.code!==3)throw Error("Free quota configuration incorrect");
+    if(q.plan!=="free"||q.limits?.chat!==60||q.limits?.code!==10)throw Error("Free quota configuration incorrect");
     console.log("JVEX anonymous quota service: OK");
     const res=await fetch(base+"/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},signal:controller.signal,body:JSON.stringify({messages:[{role:"user",content:"Привет! Ответь одним коротким предложением."}],mode:"chat",search:"off",preference:"groq"})});
     const data=await res.json().catch(()=>({}));
