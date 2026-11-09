@@ -22,12 +22,12 @@ iframe{display:block;width:100%;height:100%;border:0;border-radius:10px;backgrou
 </style>
 </head><body>
 <header><span class="logo">J</span><div><h1>JVEX • Игры</h1><small>Сгенерировано ИИ · безопасная песочница</small></div>
-<select id="game" aria-label="Выбери игру"><option value="snake">🐍 Змейка</option><option value="tanks">🛡 Танки</option><option value="pong">🏓 Пинг-понг</option><option value="breakout">🧱 Арканоид</option></select>
+<select id="game" aria-label="Выбери игру"><option value="snake">🐍 Змейка</option><option value="snake-qwen">🐍 Змейка Qwen</option><option value="tanks">🛡 Танки</option><option value="pong">🏓 Пинг-понг</option><option value="breakout">🧱 Арканоид</option></select>
 <a href="../">JVEX AI</a></header>
 <main><div id="message" role="status">Загружаю игру…</div><iframe id="frame" title="Игра JVEX" sandbox="allow-scripts" referrerpolicy="no-referrer"></iframe></main>
 <script>
 "use strict";
-const choices=["snake","tanks","pong","breakout"];
+const choices=["snake","snake-qwen","tanks","pong","breakout"];
 const query=new URLSearchParams(location.search),requested=query.get("g");
 const chosen=choices.includes(requested)?requested:"snake";
 const select=document.getElementById("game"),message=document.getElementById("message"),frame=document.getElementById("frame");
