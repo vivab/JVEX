@@ -324,7 +324,7 @@ test("Groq Whisper push-to-talk audio returns text without exposing key",async()
 });
 test("Transcription rejects non-audio before any credit is reserved",async()=>{
  const q=mockQuota();
- const r=await app.fetch(audioRequest(new File(["<html>evil</html>"],"a.html",{type:"text/html"})),useEnv({GROQ_API_KEY:"fake"},q));
+ const r=await app.fetch(audioRequest(new File(["<html>evil</html>".repeat(40)],"a.html",{type:"text/html"})),useEnv({GROQ_API_KEY:"fake"},q));
  assert.equal(r.status,415);assert.equal(q.counts.chat,0);
 });
 test("Groq Whisper error fully refunds transcript cost",async()=>{
