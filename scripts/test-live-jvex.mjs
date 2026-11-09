@@ -20,6 +20,18 @@ async function verify(){
     console.log("JVEX live chat through Cloudflare + Groq: SUCCESS");
     console.log("Model: "+data.model);
     console.log("Reply: "+data.answer.replace(/\s+/g," ").slice(0,220));
+    const watch=await fetch(base+"/api/watch",{
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      signal:controller.signal,
+      body:JSON.stringify({q:"Как тебя зовут? Ответь кратко."})
+    });
+    const spoken=await watch.text();
+    if(!watch.ok||!watch.headers.get("Content-Type")?.includes("text/plain")||!spoken.trim())
+      throw Error("Watch voice API failed HTTP "+watch.status+": "+spoken.slice(0,100));
+    console.log("JVEX WATCH spoken-text endpoint: SUCCESS");
+    console.log("Watch reply: "+spoken.slice(0,120));
+
   }finally{clearTimeout(timer)}
 }
 try{await verify()}catch(e){console.error("JVEX smoke: "+String(e.message||e));process.exitCode=1}
