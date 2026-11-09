@@ -29,7 +29,7 @@ function gameCheck(html,id){
  if(id==="snake"){checks.snake=/snake|змейк/i.test(html);checks.food=/food|яблок|еда/i.test(html);checks.collision=/collision|gameOver|gameover|death|проигр/i.test(html)}
  return checks;
 }
-function mathCheck(s){return {linear:/x\s*=\s*3[.,]5|x\s*=\s*7\/2|x\s*=\s*7\s*\/\s*2/i.test(s),quadratic:/\b2\b/.test(s)&&/\b3\b/.test(s),probability:/5\s*\/\s*14|5\s*⁄\s*14/.test(s)}}
+function mathCheck(s){return {linear:/x\s*=\s*3[.,]5|x\s*=\s*3\s*\{,\}\s*5|x\s*=\s*7\/2|x\s*=\s*7\s*\/\s*2|x\s*=\s*\\frac\{7\}\{2\}/i.test(s),quadratic:/\b2\b/.test(s)&&/\b3\b/.test(s),probability:/5\s*\/\s*14|5\s*⁄\s*14|\\frac\{5\}\{14\}/.test(s)}}
 function grammarCheck(s){const x=s.toLowerCase().slice(0,600);return {techenie:x.includes("в течение недели"),ni:x.includes("ни разу"),videli:x.includes("видели друзей"),priezde:x.includes("по приезде домой"),nadel:x.includes("надел куртку"),poshel:/пош[её]л гулять/.test(x),nesmotrya:x.includes("несмотря на дождь"),vsetaki:/всё-таки|все-таки/.test(x)}}
 const report=[];
 for(let i=0;i<tasks.length;i++){
