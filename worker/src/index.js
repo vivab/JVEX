@@ -48,10 +48,59 @@ export function groqCandidates(mode="chat",requested="auto",configured=""){
 }
 async function openai(provider,model,key,messages,limit=2200){let url=provider==="Groq"?"https://api.groq.com/openai/v1/chat/completions":"https://openrouter.ai/api/v1/chat/completions";let controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),45000);try{let r=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json","Authorization":"Bearer "+key,...(provider==="OpenRouter"?{"X-Title":"JVEX"}:{})},body:JSON.stringify({model,messages,...(provider==="Groq"?{max_completion_tokens:limit}:{max_tokens:limit})}),signal:controller.signal});let data=await r.json().catch(()=>({}));if(!r.ok)throw Error("HTTP "+r.status);let val=data.choices?.[0]?.message?.content;let answer=typeof val==="string"?val:Array.isArray(val)?val.filter(p=>p.type==="text").map(p=>p.text).join("\n"):"";if(!answer)throw Error("Пустой ответ");return {answer,model:data.model||model}}finally{clearTimeout(timeout)}}
 async function gemini(env,messages,ground){const model=env.GEMINI_MODEL||"gemini-2.5-flash";let contents=messages.filter(m=>m.role!=="system").map(m=>({role:m.role==="assistant"?"model":"user",parts:typeof m.content==="string"?[{text:m.content}]:m.content.map(p=>p.type==="text"?{text:p.text}:{inline_data:{mime_type:p.image_url.url.split(";")[0].slice(5),data:p.image_url.url.split(",")[1]}})}));let payload={systemInstruction:{parts:[{text:messages.find(m=>m.role==="system")?.content||BASE}]},contents,generationConfig:{maxOutputTokens:1700}};if(ground)payload.tools=[{google_search:{}}];let controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),45000);try{let r=await fetch("https://generativelanguage.googleapis.com/v1beta/models/"+encodeURIComponent(model)+":generateContent",{method:"POST",headers:{"x-goog-api-key":env.GEMINI_API_KEY,"Content-Type":"application/json"},body:JSON.stringify(payload),signal:controller.signal});let data=await r.json().catch(()=>({}));if(!r.ok)throw Error("Gemini HTTP "+r.status+" "+String(data.error?.message||"").slice(0,130));let c=data.candidates?.[0]||{},answer=(c.content?.parts||[]).filter(p=>p.text).map(p=>p.text).join("\n");if(!answer)throw Error("Пустой ответ");let sources=(c.groundingMetadata?.groundingChunks||[]).filter(x=>x.web&&isUrl(x.web.uri)).map(x=>({title:x.web.title||"Источник",url:x.web.uri})).slice(0,6);return {answer,model,sources}}finally{clearTimeout(timeout)}}
+// One-day watchOS Shortcuts adapter: POST {"q":"spoken question"} -> text/plain
+// Apple Watch handles speech dictation and Speak Text locally; no microphone access on the server.
+function watchText(message,status=200,corsHeaders={}){
+  return new Response(message,{status,headers:{
+    "Content-Type":"text/plain; charset=utf-8",
+    "Cache-Control":"no-store",
+    "X-Content-Type-Options":"nosniff",
+    ...corsHeaders
+  }});
+}
+export function watchRequestValid(data){
+  const q=typeof data?.q==="string"?data.q.trim():"";
+  return q.length>=1&&q.length<=650?q:null;
+}
+async function watchReply(request,env,headers){
+  if(request.method!=="POST")return watchText("Используй команду JVEX Watch.",405,headers);
+  if(!(request.headers.get("Content-Type")||"").toLowerCase().includes("application/json"))return watchText("Неверный формат вопроса.",415,headers);
+  if(Number(request.headers.get("Content-Length")||0)>3500)return watchText("Вопрос слишком длинный.",413,headers);
+  let payload;
+  try{payload=await request.json()}catch{return watchText("Не смог прочитать вопрос.",400,headers)}
+  const question=watchRequestValid(payload);
+  if(!question)return watchText("Повтори вопрос покороче.",400,headers);
+  let identity;
+  try{identity=await anonIdentity(request,env)}catch{return watchText("JVEX пока не готов к работе.",503,headers)}
+  let credits;
+  try{credits=await quotaAction(env,identity,"reserve","chat",1)}
+  catch{return watchText("Счётчик запросов временно недоступен.",503,headers)}
+  if(!credits.allowed)return watchText(credits.reason==="user"?
+    "На сегодня запросы закончились. Попробуй завтра.":
+    "Сейчас слишком много запросов. Попробуй позже.",429,headers);
+  if(!env.GROQ_API_KEY){
+    try{await quotaAction(env,identity,"refund","chat",1)}catch{}
+    return watchText("Голосовой помощник не подключён к модели.",503,headers);
+  }
+  const messages=[
+    {role:"system",content:"Ты JVEX Watch, быстрый и понятный голосовой помощник на Apple Watch. Отвечай по-русски максимально кратко, обычно одним или двумя предложениями, простыми словами, без списков, разметки, эмодзи и длинного кода. Важные факты не выдумывай. Не говори, что искал в интернете, если веб-поиск не подключён. Ответ будет озвучен часами."},
+    {role:"user",content:question}
+  ];
+  for(const model of ["openai/gpt-oss-20b","openai/gpt-oss-120b"]){
+    try{
+      const data=await openai("Groq",model,env.GROQ_API_KEY,messages,600);
+      const spoken=String(data.answer||"").replace(/[\`*_#]/g,"").replace(/\s+/g," ").trim().slice(0,520);
+      if(spoken)return watchText(spoken,200,headers);
+    }catch{}
+  }
+  try{await quotaAction(env,identity,"refund","chat",1)}catch{}
+  return watchText("Сейчас модель не отвечает. Попробуй позже.",503,headers);
+}
 export default {async fetch(request,env){
 const h=cors(request,env),path=new URL(request.url).pathname;
 if(request.method==="OPTIONS")return new Response(null,{status:204,headers:h});
 if(path==="/api/health"&&request.method==="GET")return result({ok:true,service:"JVEX",configured:!!(env.OPENROUTER_API_KEY||env.GROQ_API_KEY||env.GEMINI_API_KEY)},200,h);
+if(path==="/api/watch")return watchReply(request,env,h);
 if(path==="/api/plans"&&request.method==="GET")return result({plans:PLANS},200,h);
 if(path!=="/api/chat"&&path!=="/api/usage")return result({error:"Not found"},404,h);
 if(path==="/api/chat"&&request.method!=="POST"||path==="/api/usage"&&request.method!=="GET")return result({error:"Method not allowed"},405,h);
