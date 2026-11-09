@@ -290,7 +290,7 @@ test("Gemini preference uses current Flash model and remains server-side",async(
  let url;
  await fakeFetch(async(_url,options)=>{
    url=String(_url);
-   return Response.json({candidates:[{content:{parts:[{text:"Ответ Gemini"}}]}]});
+   return Response.json({candidates:[{content:{parts:[{text:"Ответ Gemini"}]}}]});
  },async()=>{
    const r=await app.fetch(request(msgs,{preference:"gemini"}),useEnv({GEMINI_API_KEY:"fake"}));
    assert.equal(r.status,200);
