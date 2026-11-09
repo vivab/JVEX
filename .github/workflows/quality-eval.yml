@@ -4,6 +4,7 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/quality-eval.yml'
+      - 'scripts/quality-eval.mjs'
   workflow_dispatch:
 permissions:
   contents: read
@@ -11,10 +12,16 @@ permissions:
 jobs:
   evaluate:
     runs-on: ubuntu-latest
-    timeout-minutes: 16
+    timeout-minutes: 22
     steps:
       - uses: actions/checkout@v4
-      - name: Run four real AI tasks
+      - name: Validate evaluation runner
+        run: node --check scripts/quality-eval.mjs
+      - name: Set up real Chromium game testing
+        run: |
+          npm install --no-save playwright
+          npx playwright install --with-deps chromium
+      - name: Run eight real JVEX tasks and open generated games in Chromium
         run: node scripts/quality-eval.mjs
       - name: Upload model responses and generated games
         if: always()
@@ -30,5 +37,5 @@ jobs:
           JOB_RESULT: ${{ job.status }}
         run: |
           if [ "$JOB_RESULT" = "success" ]; then state=success; else state=failure; fi
-          jq -nc --arg state "$state" --arg target "https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" '{state:$state,context:"JVEX / Live QA",description:"Tanks, Snake, math, grammar",target_url:$target}' > /tmp/jvex-quality-status.json
+          jq -nc --arg state "$state" --arg target "https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" '{state:$state,context:"JVEX / Live QA",description:"8 live tasks: math, grammar, CS, physics, games, art prompts, teaching",target_url:$target}' > /tmp/jvex-quality-status.json
           curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" -H "Content-Type: application/json" --data-binary @/tmp/jvex-quality-status.json "https://api.github.com/repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" > /dev/null
