@@ -80,11 +80,49 @@ async function refreshUsage(){try{let res=await fetch(API_BASE+"/api/usage");if(
 async function checkConnection(){try{const r=await fetch(API_BASE+"/api/health");const data=await r.json();$("state").textContent=r.ok&&data.configured?"JVEX · онлайн":"API не настроен"}catch{$("state").textContent="Сервер недоступен"}}
 function webLabel(){$("web").textContent="◎ Поиск: "+({auto:"авто",on:"вкл",off:"выкл"}[cfg.web])}
 function processPhoto(file){return new Promise((resolve,reject)=>{if(!file||!file.type.startsWith("image/")||file.size>10e6)return reject(Error("Фото должно быть не больше 10 МБ"));let fr=new FileReader();fr.onerror=()=>reject(Error("Ошибка чтения фото"));fr.onload=()=>{let img=new Image();img.onerror=()=>reject(Error("Не удалось открыть фото"));img.onload=()=>{let canvas=document.createElement("canvas"),scale=Math.min(1,1280/Math.max(img.width,img.height));canvas.width=Math.max(1,Math.round(img.width*scale));canvas.height=Math.max(1,Math.round(img.height*scale));canvas.getContext("2d").drawImage(img,0,0,canvas.width,canvas.height);resolve(canvas.toDataURL("image/jpeg",.75))};img.src=fr.result};fr.readAsDataURL(file)})}
-async function send(e){e.preventDefault();if(busy)return;let value=$("prompt").value.trim();if(!value&&!image)return;let c=selected();if(!c){c={id:Date.now()+"-"+Math.random(),title:(value||"Фото").slice(0,45),mode,messages:[]};chats.push(c);active=c.id}
-c.messages.push({role:"user",content:value||"Что на фото?",image});saveChats();image=null;preview();$("prompt").value="";let answer={role:"assistant",content:"JVEX думает..."};c.messages.push(answer);render();busy=true;$("send").disabled=true;
-try{let r=await fetch(API_BASE+"/api/chat",{method:"POST",headers:{"Content-Type":"application/json",},body:JSON.stringify({messages:c.messages.slice(0,-1).slice(-18),mode:c.mode,search:cfg.web,preference:cfg.provider,groqModel:cfg.groqModel})});let data=await r.json().catch(()=>({}));if(!r.ok){if(data.usage)usageLabel(data.usage);throw Error(data.error||"HTTP "+r.status)}answer.content=data.answer||"Пустой ответ";answer.sources=data.sources;answer.searched=data.searched;answer.githubRepository=data.githubRepository;usageLabel(data.usage);refreshUsage()}
-catch(err){answer.content="Не удалось получить ответ: "+err.message+"\nПопробуйте ещё раз через несколько секунд."}
-finally{busy=false;$("send").disabled=false;saveChats();render()}}
+
+async function reveal(answer,thread){
+ const content=String(answer.content||"");
+ if(!content||window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches||active!==thread.id)return;
+ const frames=window.JVEXProgress?.revealFrames(content,115)||[content.length];
+ for(const count of frames){
+   if(active!==thread.id)break;
+   answer.partial=content.slice(0,count);updateReply(answer,thread);
+   await new Promise(resolve=>setTimeout(resolve,19));
+ }
+ delete answer.partial;updateReply(answer,thread);
+}
+async function send(event){
+ event.preventDefault();if(busy)return;
+ const value=$("prompt").value.trim();if(!value&&!image)return;
+ let thread=selected();
+ if(!thread){thread={id:Date.now()+"-"+Math.random(),title:(value||"Фото").slice(0,45),mode,messages:[]};chats.push(thread);active=thread.id}
+ const task={mode:thread.mode,text:value,image:!!image};
+ thread.messages.push({role:"user",content:value||"Что на фото?",image});
+ saveChats();image=null;preview();$("prompt").value="";quotedCost();
+ const phases=window.JVEXProgress?.phases(task)||[{title:"Читаю…",note:"Получен запрос"},{title:"Думаю…",note:"Ожидаю ответ модели"}];
+ const answer={role:"assistant",id:"r"+Date.now().toString(36)+Math.random().toString(36).slice(2,8),content:"",pending:true,status:phases[0].title,steps:[phases[0].note]};
+ thread.messages.push(answer);render();busy=true;$("send").disabled=true;
+ const timers=[];
+ function stage(p){if(!answer.pending)return;answer.status=p.title;if(p.note&&!answer.steps.includes(p.note))answer.steps.push(p.note);updateReply(answer,thread)}
+ if(phases[1])timers.push(setTimeout(()=>stage(phases[1]),420));
+ if(phases[2])timers.push(setTimeout(()=>stage(phases[2]),1600));
+ try{
+   const response=await fetch(API_BASE+"/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({messages:thread.messages.filter(m=>m!==answer).slice(-18),mode:thread.mode,search:cfg.web,preference:cfg.provider,groqModel:cfg.groqModel})});
+   const data=await response.json().catch(()=>({}));
+   if(!response.ok){if(data.usage)usageLabel(data.usage);throw Error(data.error||"HTTP "+response.status)}
+   timers.forEach(clearTimeout);answer.pending=false;
+   answer.content=data.answer||"Пустой ответ";answer.sources=data.sources;answer.searched=data.searched;answer.githubRepository=data.githubRepository;
+   answer.activity=data.activity;answer.cost=data.cost;usageLabel(data.usage);refreshUsage();
+   await reveal(answer,thread);
+ }catch(error){
+   answer.pending=false;answer.content="Не удалось получить ответ: "+error.message+"\nПопробуй ещё раз немного позже.";delete answer.partial;updateReply(answer,thread);
+ }finally{
+   timers.forEach(clearTimeout);busy=false;$("send").disabled=false;
+   delete answer.pending;delete answer.status;delete answer.steps;delete answer.partial;
+   saveChats();updateReply(answer,thread);
+ }
+}
 $("new").onclick=fresh;$("hamb").onclick=()=>menu(true);$("veil").onclick=()=>menu(false);$("chatMode").onclick=()=>{setMode("chat");fresh()};$("codeMode").onclick=()=>{setMode("code");fresh()};$("openCode").onclick=()=>{setMode("code");fresh()};$("find").onclick=()=>{let q=prompt("Найти чат по названию:");if(!q)return;let c=chats.find(c=>c.title.toLowerCase().includes(q.toLowerCase()));if(c){active=c.id;setMode(c.mode);render();menu(false)}else alert("Не найдено")};
 $("plansSide").onclick=()=>{menu(false);plansModal(true)};$("closePlans").onclick=()=>plansModal(false);$("plansBackdrop").onclick=e=>{if(e.target===$("plansBackdrop"))plansModal(false)};$("settingsSide").onclick=()=>modal(true);$("settingsTop").onclick=()=>modal(true);$("closeModal").onclick=()=>modal(false);$("backdrop").onclick=e=>{if(e.target===$("backdrop"))modal(false)};
 $("save").onclick=()=>{cfg.accent=$("accent").value;cfg.dark=$("dark").checked;cfg.provider=$("provider").value;cfg.groqModel=$("groqModel").value;saveCfg();theme();modal(false);refreshUsage()};
