@@ -16,7 +16,8 @@ jobs:
       - name: Validate Worker
         run: |
           node --check worker/src/index.js
-          node --test worker/test/index.test.js
+          node --check assets/format.js
+          node --test worker/test/*.test.js
       - name: Verify Cloudflare credentials and at least one AI key
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
