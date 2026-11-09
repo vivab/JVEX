@@ -1,0 +1,41 @@
+name: JVEX mobile UI smoke test
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/ui-smoke.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  statuses: write
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install headless Chromium test runner
+        run: |
+          npm install --no-save playwright
+          npx playwright install --with-deps chromium
+      - name: Test mobile composer with mocked API
+        run: |
+          python3 -m http.server 8123 --bind 127.0.0.1 >/tmp/jvex-ui-server.log 2>&1 &
+          sleep 1
+          node scripts/ui-smoke.mjs
+      - name: Upload UI screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jvex-mobile-ui-test
+          path: ui-results/
+          if-no-files-found: ignore
+      - name: Report UI smoke test
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          JOB_RESULT: ${{ job.status }}
+        run: |
+          if [ "$JOB_RESULT" = "success" ]; then state=success; else state=failure; fi
+          jq -nc --arg state "$state" --arg target "https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" '{state:$state,context:"JVEX / Mobile UI",description:"Plus menu, mic, autosend smoke",target_url:$target}' > /tmp/jvex-ui-status.json
+          curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" -H "Content-Type: application/json" --data-binary @/tmp/jvex-ui-status.json "https://api.github.com/repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" >/dev/null
