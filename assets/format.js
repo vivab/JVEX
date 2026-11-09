@@ -90,7 +90,7 @@ function zipBlob(files){
  return new Blob([...local,...central,end],{type:"application/zip"});
 }
 function button(label,fn){const b=document.createElement("button");b.type="button";b.textContent=label;b.onclick=fn;return b}
-function render(target,text){
+function render(target,text,{partial=false}={}){
  const parts=String(text||"").split(F),files=blocks(text);
  if(parts.length===1){markdown(target,text);return}
  let n=0;
@@ -100,10 +100,11 @@ function render(target,text){
   const holder=document.createElement("div");holder.className="code-file";
   const toolbar=document.createElement("div");toolbar.className="code-toolbar";
   const name=document.createElement("span");name.textContent=f.filename;name.className="code-name";
-  toolbar.append(name,button("Копировать",()=>navigator.clipboard?.writeText(f.content).catch(()=>{})),button("↓ Файл",()=>download(f.filename,f.content)));
+  toolbar.append(name);if(!partial)toolbar.append(button("Копировать",()=>navigator.clipboard?.writeText(f.content).catch(()=>{})),button("↓ Файл",()=>download(f.filename,f.content)));
   const pre=document.createElement("pre"),code=document.createElement("code");code.textContent=f.content;
   pre.append(code);holder.append(toolbar,pre);target.append(holder);
  }
+ if(partial)return;
  const controls=document.createElement("div");controls.className="file-actions";
  if(files.length>1)controls.append(button("↓ Скачать проект ZIP ("+files.length+" файлов)",()=>download("JVEX-project.zip",zipBlob(files),"application/zip")));
  controls.append(button("↓ Скачать ответ TXT",()=>download("JVEX-answer.txt",text)));
