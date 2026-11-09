@@ -28,7 +28,7 @@ function setMode(value){mode=value;quotedCost();$("welcomeSubtitle").textContent
 function fresh(){active=null;image=null;$("prompt").value="";preview();render();menu(false)}
 function preview(){quotedCost();let p=$("preview");p.replaceChildren();p.hidden=!image;if(image){let el=document.createElement("img");el.src=image;let remove=document.createElement("button");remove.textContent="× Убрать";remove.type="button";remove.onclick=()=>{image=null;$("photo").value="";preview()};p.append(el,remove)}}
 function history(){let el=$("history");el.replaceChildren();if(!chats.length){el.textContent="Пока пусто";return}chats.slice().reverse().forEach(c=>{let row=document.createElement("div");row.className="thread"+(c.id===active?" active":"");let title=document.createElement("span");title.textContent=c.title;row.onclick=()=>{active=c.id;setMode(c.mode);render();menu(false)};let del=document.createElement("button");del.className="delete";del.textContent="×";del.title="Удалить чат";del.onclick=e=>{e.stopPropagation();if(!confirm("Удалить чат?"))return;chats=chats.filter(x=>x.id!==c.id);if(active===c.id)active=null;saveChats();render()};row.append(title,del);el.append(row)})}
-function textParts(el,str){if(window.JVEXFiles)window.JVEXFiles.render(el,str);else el.textContent=str}
+function textParts(el,str,partial=false){if(window.JVEXFiles)window.JVEXFiles.render(el,str,{partial});else el.textContent=str}
 
 function drawBubble(bubble,m){
  bubble.replaceChildren();
@@ -41,7 +41,7 @@ function drawBubble(bubble,m){
    if(m.steps?.length){let ul=document.createElement("ul");ul.className="work-steps";for(const note of m.steps){let li=document.createElement("li");li.textContent=note;ul.append(li)}bubble.append(ul)}
    let caption=document.createElement("div");caption.className="work-hint";caption.textContent="Этапы обработки, не внутренние мысли модели";bubble.append(caption);return;
  }
- textParts(bubble,m.partial!==undefined?m.partial:m.content);
+ textParts(bubble,m.partial!==undefined?m.partial:m.content,m.partial!==undefined);
  if(m.partial!==undefined){let c=document.createElement("span");c.className="cursor";c.setAttribute("aria-hidden","true");bubble.append(c);return}
  if(m.sources?.length){let refs=document.createElement("div");refs.className="sources";m.sources.forEach(source=>{try{let url=new URL(source.url);if(!["https:","http:"].includes(url.protocol))return;let a=document.createElement("a");a.href=url.href;a.target="_blank";a.rel="noopener noreferrer";a.textContent=source.title||url.hostname;refs.append(a)}catch{}});bubble.append(refs)}
  if(m.githubRepository){let meta=document.createElement("div");meta.className="meta";meta.textContent="GitHub: "+m.githubRepository;bubble.append(meta)}
