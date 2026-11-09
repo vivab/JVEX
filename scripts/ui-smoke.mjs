@@ -38,6 +38,7 @@ try{
  await page.waitForFunction(()=>document.querySelector("#dialog")?.textContent?.includes("Это тестовый ответ JVEX"),{timeout:13000});
  assert.ok(requests.some(r=>r.chat?.messages?.at(-1)?.content==="Привет, JVEX!"),"Typed request was sent");
  await page.screenshot({path:"ui-results/mobile-chat.png",fullPage:true});
+ await page.waitForFunction(()=>document.querySelector("#send")?.disabled===false,null,{timeout:16000});
  await page.locator("#prompt").fill("");
  await page.waitForSelector("#send[data-action='mic']");
  const btn=page.locator("#send");
