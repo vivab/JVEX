@@ -1,6 +1,6 @@
 import {test} from "node:test";
 import assert from "node:assert/strict";
-import app,{githubRepositoryFromMessages} from "../src/index.js";
+import app,{githubRepositoryFromMessages,groqCandidates} from "../src/index.js";
 import {QuotaGuard,PLANS,CODE_WINDOW_MS,quotaVerdict} from "../src/quotas.js";
 const person="a".repeat(64);
 const baseEnv={ALLOWED_ORIGIN:"https://vivab.github.io",QUOTA_SALT:"test-unique-salt-for-quota"};
@@ -11,10 +11,10 @@ function mockQuota(){
     idFromName:()=>({}),
     get:()=>({fetch:async(_url,options)=>{
       const {action,lane}=JSON.parse(options.body);
-      if(action==="reserve"&&counts[lane]>=({chat:20,code:3}[lane]))return Response.json({allowed:false,reason:"user",remaining:{chat:20-counts.chat,code:3-counts.code},limits:{chat:20,code:3}});
+      if(action==="reserve"&&counts[lane]>=({chat:60,code:10}[lane]))return Response.json({allowed:false,reason:"user",remaining:{chat:60-counts.chat,code:10-counts.code},limits:{chat:60,code:10}});
       if(action==="reserve")counts[lane]++;
       if(action==="refund")counts[lane]=Math.max(0,counts[lane]-1);
-      return Response.json({allowed:true,limits:{chat:20,code:3},remaining:{chat:20-counts.chat,code:3-counts.code},used:{...counts},resetAt:{chat:"2026-11-10T00:00:00Z",code:null}});
+      return Response.json({allowed:true,limits:{chat:60,code:10},remaining:{chat:60-counts.chat,code:10-counts.code},used:{...counts},resetAt:{chat:"2026-11-10T00:00:00Z",code:null}});
     }})
   };
 }
@@ -46,7 +46,7 @@ test("unauthenticated usage endpoint works with IP-derived identity",async()=>{
   const q=mockQuota();
   const r=await app.fetch(new Request("https://x/api/usage",{headers:{"CF-Connecting-IP":"203.0.113.8"}}),useEnv({},q));
   assert.equal(r.status,200);
-  assert.equal((await r.json()).remaining.code,3);
+  assert.equal((await r.json()).remaining.code,10);
 });
 test("no model key fails without consuming quota",async()=>{
   const q=mockQuota(),r=await app.fetch(request(msgs),useEnv({},q));
@@ -70,7 +70,7 @@ test("fallback after 429 moves to OpenRouter and preserves quota",async()=>{
     const r=await app.fetch(request(msgs),useEnv({GROQ_API_KEY:"fake",OPENROUTER_API_KEY:"fake"},q));
     assert.equal(r.status,200);assert.match((await r.json()).model,/OpenRouter/);
   });
-  assert.equal(urls.length,2);assert.equal(q.counts.chat,1);
+  assert.equal(urls.length,4);assert.equal(q.counts.chat,1);
 });
 test("photo enters Gemini as inline image",async()=>{
   let payload;
@@ -94,10 +94,10 @@ test("Code lane uses separate quota",async()=>{
     assert.equal(r.status,200);
   });assert.equal(q.counts.code,1);assert.equal(q.counts.chat,0);
 });
-test("Free plan respects 20 chat and 3 code slots",()=>{
-  assert.equal(quotaVerdict(20,0,0,"chat",300).reason,"user");
-  assert.equal(quotaVerdict(3,0,0,"code",45).reason,"user");
-  assert.equal(quotaVerdict(2,0,0,"code",45).allowed,true);
+test("Free plan respects 60 chat and 10 code slots",()=>{
+  assert.equal(quotaVerdict(60,0,0,"chat",600).reason,"user");
+  assert.equal(quotaVerdict(10,0,0,"code",150).reason,"user");
+  assert.equal(quotaVerdict(9,0,0,"code",150).allowed,true);
   assert.equal(CODE_WINDOW_MS,18000000);
   assert.equal(PLANS.length,5);
 });
@@ -147,14 +147,14 @@ test("Code reset is exactly five hours after first successful request, not at mi
     const first=await (await action(guard,"reserve","code")).json();
     assert.equal(first.used.code,1);
     assert.equal(first.resetAt.code,new Date(initial+CODE_WINDOW_MS).toISOString());
-    for(let i=0;i<2;i++)assert.equal((await (await action(guard,"reserve","code")).json()).allowed,true);
+    for(let i=1;i<10;i++){Date.now=()=>initial+i*61000;assert.equal((await (await action(guard,"reserve","code")).json()).allowed,true)}
     assert.equal((await (await action(guard,"reserve","code")).json()).reason,"user");
     Date.now=()=>initial+60*60*1000; // after UTC midnight but not five hours
     assert.equal((await (await action(guard,"reserve","code")).json()).reason,"user");
     Date.now=()=>initial+CODE_WINDOW_MS;
     const refreshed=await (await action(guard,"reserve","code")).json();
     assert.equal(refreshed.allowed,true);assert.equal(refreshed.used.code,1);
-    assert.equal(refreshed.remaining.code,2);
+    assert.equal(refreshed.remaining.code,9);
   }finally{Date.now=original}
 });
 test("Chat slots reset at UTC midnight independently of Code",async()=>{
@@ -186,4 +186,23 @@ test("JVEX Code remembers latest repository from earlier user messages",()=>{
 test("JVEX Code ignores arbitrary URLs and fake github hostnames",()=>{
   assert.equal(githubRepositoryFromMessages([{role:"user",content:"https://notgithub.com/a/b"}]),null);
   assert.equal(githubRepositoryFromMessages([{role:"user",content:"https://example.org/vivab/JVEX"}]),null);
+});
+
+test("Groq auto fallback orders text-capable models by task",()=>{
+ assert.deepEqual(groqCandidates("chat","auto"),["openai/gpt-oss-20b","openai/gpt-oss-120b","qwen/qwen3.8-27b"]);
+ assert.deepEqual(groqCandidates("code","auto"),["openai/gpt-oss-120b","qwen/qwen3.8-27b","openai/gpt-oss-20b"]);
+ assert.equal(groqCandidates("chat","qwen/qwen3.8-27b")[0],"qwen/qwen3.8-27b");
+ assert.equal(groqCandidates("chat","untrusted-paid-model")[0],"openai/gpt-oss-20b");
+});
+test("Groq 429 falls back to another Groq model before using other providers",async()=>{
+ const tried=[];
+ await fakeFetch(async(url,opts)=>{
+   const body=JSON.parse(opts.body);tried.push(body.model);
+   if(tried.length===1)return Response.json({error:{message:"limited"}},{status:429});
+   return Response.json({model:body.model,choices:[{message:{content:"Fallback model working"}}]});
+ },async()=>{
+   const r=await app.fetch(request(msgs),useEnv({GROQ_API_KEY:"fake"}));
+   assert.equal(r.status,200);assert.match((await r.json()).answer,/Fallback model/);
+ });
+ assert.deepEqual(tried,["openai/gpt-oss-20b","openai/gpt-oss-120b"]);
 });
