@@ -17,14 +17,16 @@ jobs:
         run: |
           node --check worker/src/index.js
           node --test worker/test/index.test.js
-      - name: Require anonymous quota salt and at least one AI key
+      - name: Verify Cloudflare credentials and at least one AI key
         env:
-          QUOTA_SALT: ${{ secrets.QUOTA_SALT }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
-          test "${#QUOTA_SALT}" -ge 16 || { echo "Missing QUOTA_SALT (min 16 characters)"; exit 1; }
+          test -n "$CLOUDFLARE_API_TOKEN" || { echo "Missing CLOUDFLARE_API_TOKEN"; exit 1; }
+          test -n "$CLOUDFLARE_ACCOUNT_ID" || { echo "Missing CLOUDFLARE_ACCOUNT_ID"; exit 1; }
           test -n "$GROQ_API_KEY$OPENROUTER_API_KEY$GEMINI_API_KEY" || { echo "Missing AI provider key"; exit 1; }
       - name: Deploy Cloudflare Worker
         uses: cloudflare/wrangler-action@v4
@@ -44,6 +46,11 @@ jobs:
           TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
         shell: bash
         run: |
+          if [[ -z "$QUOTA_SALT" ]]; then
+            # Stable across deployments while the Cloudflare token is unchanged.
+            # Derive a separate secret, never expose the token or derived salt in logs.
+            QUOTA_SALT=$(node -e 'const c=require("node:crypto");process.stdout.write(c.createHmac("sha256",process.env.CLOUDFLARE_API_TOKEN).update("JVEX-anon-v1:"+process.env.CLOUDFLARE_ACCOUNT_ID).digest("hex"))')
+          fi
           for secret in QUOTA_SALT GROQ_API_KEY OPENROUTER_API_KEY GEMINI_API_KEY TAVILY_API_KEY; do
             value="${!secret}"
             if [[ -n "$value" ]]; then
