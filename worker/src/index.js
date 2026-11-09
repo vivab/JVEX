@@ -22,7 +22,7 @@ const result=(data,status=200,headers={})=>new Response(JSON.stringify(data),{st
 function cors(request,env){const origin=request.headers.get("Origin")||"",allowed=(env.ALLOWED_ORIGIN||"").replace(/\/$/,""),local=/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);return {"Access-Control-Allow-Origin":origin&&(origin===allowed||local)?origin:"null","Access-Control-Allow-Headers":"Content-Type,X-JVEX-Access","Access-Control-Allow-Methods":"GET,POST,OPTIONS","Vary":"Origin"}}
 function isUrl(url){try{return new URL(url).protocol==="https:"}catch{return false}}
 function autoSearch(q){return !!q&&!/^(привет|здравствуй|hi|hello|пока|спасибо)[.!?\s]*$/i.test(q.trim())&&!/^(придумай|сочини|переведи|реши уравнение)/i.test(q.trim())}
-function toOpenAI(messages){return messages.map(m=>{let c=String(m.content||"").slice(0,14000);if(m.image&&m.role==="user"&&/^data:image\/(jpeg|png|webp);base64,[\w+/=]+$/.test(m.image)&&m.image.length<1500000)return {role:"user",content:[{type:"text",text:c},{type:"image_url",image_url:{url:m.image}}]};return {role:m.role,content:c}})}
+function toOpenAI(messages){return messages.map(m=>{let c=String(m.content||"").slice(0,14000);if(m.role==="user"&&m.file&&typeof m.file.name==="string"&&typeof m.file.text==="string"){const name=m.file.name.replace(/[^\w.\- ]/g,"_").slice(0,100),body=m.file.text.slice(0,9500);c=(c+"\n\nПриложенный текстовый файл: "+name+"\n<<<НАЧАЛО ФАЙЛА>>>\n"+body+"\n<<<КОНЕЦ ФАЙЛА>>>").slice(0,14000)}if(m.image&&m.role==="user"&&/^data:image\/(jpeg|png|webp);base64,[\w+/=]+$/.test(m.image)&&m.image.length<1500000)return {role:"user",content:[{type:"text",text:c},{type:"image_url",image_url:{url:m.image}}]};return {role:m.role,content:c}})}
 async function tavily(q,env){if(!env.TAVILY_API_KEY)return [];try{let r=await fetch("https://api.tavily.com/search",{method:"POST",headers:{"Authorization":"Bearer "+env.TAVILY_API_KEY,"Content-Type":"application/json"},body:JSON.stringify({query:q,search_depth:"basic",max_results:5,include_answer:false})});if(!r.ok)return [];let data=await r.json();return (data.results||[]).filter(x=>isUrl(x.url)).slice(0,5).map(x=>({title:String(x.title||"Источник").slice(0,100),url:x.url,content:String(x.content||"").slice(0,500)}))}catch{return []}}
 // Parse only actual GitHub repository links supplied by the user (including /blob/ and /tree/ links).
 // The most recently shared repository becomes the context for follow-up questions.
@@ -53,13 +53,49 @@ const h=cors(request,env),path=new URL(request.url).pathname;
 if(request.method==="OPTIONS")return new Response(null,{status:204,headers:h});
 if(path==="/api/health"&&request.method==="GET")return result({ok:true,service:"JVEX",configured:!!(env.OPENROUTER_API_KEY||env.GROQ_API_KEY||env.GEMINI_API_KEY),providers:{groq:!!env.GROQ_API_KEY,gemini:!!env.GEMINI_API_KEY,openrouter:!!env.OPENROUTER_API_KEY},routing:{chat:"openai/gpt-oss-20b",code:"qwen/qwen3.8-27b",vision:env.GEMINI_API_KEY?"gemini-3.8-flash":"qwen/qwen3.8-27b"}},200,h);
 if(path==="/api/plans"&&request.method==="GET")return result({plans:PLANS},200,h);
-if(path!=="/api/chat"&&path!=="/api/usage")return result({error:"Not found"},404,h);
-if(path==="/api/chat"&&request.method!=="POST"||path==="/api/usage"&&request.method!=="GET")return result({error:"Method not allowed"},405,h);
+if(path!=="/api/chat"&&path!=="/api/usage"&&path!=="/api/transcribe")return result({error:"Not found"},404,h);
+if((path==="/api/chat"||path==="/api/transcribe")&&request.method!=="POST"||path==="/api/usage"&&request.method!=="GET")return result({error:"Method not allowed"},405,h);
 let anon;
 try{anon=await anonIdentity(request,env)}catch{return result({error:"Анонимные лимиты не настроены на сервере."},503,h)}
 if(path==="/api/usage"){
   try{return result(await quotaAction(env,anon,"status"),200,h)}
   catch{return result({error:"Невозможно получить лимиты."},503,h)}
+}
+if(path==="/api/transcribe"){
+  // Short push-to-talk clips, capped before calling the transcription model.
+  if(!(request.headers.get("Content-Type")||"").toLowerCase().includes("multipart/form-data"))
+    return result({error:"Ожидался аудиофайл."},415,h);
+  if(Number(request.headers.get("Content-Length")||0)>5500000)return result({error:"Запись слишком длинная."},413,h);
+  let form,file;
+  try{form=await request.formData();file=form.get("audio")}
+  catch{return result({error:"Не удалось прочитать запись."},400,h)}
+  if(!file||typeof file.size!=="number"||typeof file.arrayBuffer!=="function"||file.size<200||file.size>4500000)
+    return result({error:"Аудио должно быть короче и не больше 4,5 МБ."},413,h);
+  const formats={"audio/webm":"webm","audio/mp4":"m4a","audio/x-m4a":"m4a","audio/mpeg":"mp3","audio/ogg":"ogg","audio/wav":"wav","audio/x-wav":"wav"};
+  const mime=String(file.type||"").split(";")[0].toLowerCase();
+  const ext=formats[mime];
+  if(!ext)return result({error:"Формат записи не поддерживается."},415,h);
+  if(!env.GROQ_API_KEY)return result({error:"Распознавание голоса пока не подключено."},503,h);
+  let reserved;
+  try{reserved=await quotaAction(env,anon,"reserve","chat",1)}
+  catch{return result({error:"Сервис лимитов недоступен."},503,h)}
+  if(!reserved.allowed)return result({error:"Лимит голосовых запросов сейчас исчерпан.",code:"QUOTA_EXCEEDED",usage:reserved},429,h);
+  try{
+    const upload=new FormData();
+    upload.append("model","whisper-large-v3-turbo");
+    upload.append("response_format","json");
+    upload.append("file",file,"recording."+ext);
+    const r=await fetch("https://api.groq.com/openai/v1/audio/transcriptions",{
+      method:"POST",headers:{"Authorization":"Bearer "+env.GROQ_API_KEY},
+      body:upload,signal:AbortSignal.timeout(35000)
+    });
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok||typeof data.text!=="string"||!data.text.trim())throw Error("Groq transcription HTTP "+r.status);
+    return result({text:data.text.trim().slice(0,9000),usage:reserved,cost:1},200,h);
+  }catch{
+    try{await quotaAction(env,anon,"refund","chat",1)}catch{}
+    return result({error:"Не получилось распознать речь. Попробуй ещё раз."},503,h);
+  }
 }
 if(!(request.headers.get("Content-Type")||"").includes("application/json"))return result({error:"Ожидался JSON."},415,h);
 if(Number(request.headers.get("Content-Length")||0)>2600000)return result({error:"Файл слишком большой."},413,h);
@@ -67,9 +103,9 @@ let payload;try{payload=await request.json()}catch{return result({error:"Нек�
 if(!Array.isArray(payload.messages)||payload.messages.length>30)return result({error:"Некорректная история."},400,h);
 let messages=payload.messages.filter(m=>m&&["user","assistant"].includes(m.role)&&typeof m.content==="string").slice(-18),last=messages.at(-1);
 if(!last||last.role!=="user")return result({error:"Нет сообщения пользователя."},400,h);
-if(messages.some(m=>m.content.length>14000||(m.image&&String(m.image).length>1500000)))return result({error:"Сообщение слишком большое."},413,h);
-let image=messages.some(m=>!!m.image),code=payload.mode==="code",needSearch=payload.search==="on"||(payload.search!=="off"&&autoSearch(last.content));
-const cost=estimateCost({mode:code?"code":"chat",text:last.content,image:!!last.image});
+if(messages.some(m=>m.content.length>14000||(m.image&&String(m.image).length>1500000)||(m.file&&(typeof m.file.name!=="string"||m.file.name.length>150||typeof m.file.text!=="string"||m.file.text.length>9500))))return result({error:"Сообщение слишком большое."},413,h);
+let image=messages.some(m=>!!m.image),code=payload.mode==="code",needSearch=autoSearch(last.content);
+const cost=estimateCost({mode:code?"code":"chat",text:last.content,image:!!last.image||!!last.file});
 // Reserve the quota before web search, model API calls or expensive GitHub reads.
 let reservation;
 try{reservation=await quotaAction(env,anon,"reserve",code?"code":"chat",cost)}
