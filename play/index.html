@@ -35,9 +35,10 @@ select.value=chosen;
 select.addEventListener("change",()=>{location.search="?g="+encodeURIComponent(select.value)});
 async function launch(){
  try{
-   const r=await fetch("./data/"+chosen+".json",{cache:"no-store"});
-   if(!r.ok)throw Error("Файл игры не опубликован. Вернись чуть позже.");
-   const game=await r.json();
+   const sources=["./data/"+chosen+".json","https://raw.githubusercontent.com/vivab/JVEX/main/play/data/"+chosen+".json"];
+   let game=null;
+   for(const source of sources){try{const r=await fetch(source,{cache:"no-store"});if(r.ok){game=await r.json();break}}catch{}}
+   if(!game)throw Error("Игра ещё не опубликована. Попробуй обновить страницу.");
    if(!game||game.id!==chosen||typeof game.html!=="string"||game.html.length>140000)throw Error("Файл игры повреждён.");
    const csp="<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'; media-src 'none'; form-action 'none'; base-uri 'none'\">";
    const body=game.html.replace(/<head(?:\s[^>]*)?>/i,m=>m+csp);
