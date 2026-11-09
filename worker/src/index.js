@@ -69,7 +69,7 @@ let messages=payload.messages.filter(m=>m&&["user","assistant"].includes(m.role)
 if(!last||last.role!=="user")return result({error:"Нет сообщения пользователя."},400,h);
 if(messages.some(m=>m.content.length>14000||(m.image&&String(m.image).length>1500000)))return result({error:"Сообщение слишком большое."},413,h);
 let image=messages.some(m=>!!m.image),code=payload.mode==="code",needSearch=payload.search==="on"||(payload.search!=="off"&&autoSearch(last.content));
-const cost=estimateCost({mode:code?"code":"chat",text:last.content,image});
+const cost=estimateCost({mode:code?"code":"chat",text:last.content,image:!!last.image});
 // Reserve the quota before web search, model API calls or expensive GitHub reads.
 let reservation;
 try{reservation=await quotaAction(env,anon,"reserve",code?"code":"chat",cost)}
