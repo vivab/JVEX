@@ -109,6 +109,6 @@ if(!attempts.length){
  return result({error:"Нет настроенных API-ключей моделей."},503,h);
 }
 const problems=[];for(const [name,call] of attempts){try{let data=await call(),refs=(data.sources||[]).length?data.sources:sources.map(s=>({title:s.title,url:s.url}));return result({answer:data.answer,model:name+" / "+data.model,sources:refs,searched:refs.length>0,cost,activity:{reading:"Запрос прочитан",context:linkedRepository?"Учтён публичный GitHub: "+linkedRepository:sources.length?"Проверены веб-источники":"Учтён контекст диалога",writing:taskLabel({mode:code?"code":"chat",text:last.content,image})},usage:reservation,githubRepository:linkedRepository},200,h)}catch(e){problems.push(name+" "+String(e.message||e).replace(/[^a-zA-Z0-9 :/-]/g,"").slice(0,40))}}
-try{await quotaAction(env,anon,"refund",code?"code":"chat")}catch{}
+try{await quotaAction(env,anon,"refund",code?"code":"chat",cost)}catch{}
 return result({error:problems.every(x=>x.includes("HTTP 429"))?"Сейчас достигнут лимит Groq. Попробуй позже — доступные модели уже проверены автоматически.":"ИИ временно недоступен. Попробуй немного позже.",code:"UPSTREAM_UNAVAILABLE"},503,h);
 }};
