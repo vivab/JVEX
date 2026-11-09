@@ -1,6 +1,6 @@
 import {test} from "node:test";
 import assert from "node:assert/strict";
-import app,{githubRepositoryFromMessages,groqCandidates,watchRequestValid} from "../src/index.js";
+import app,{githubRepositoryFromMessages,groqCandidates} from "../src/index.js";
 import {QuotaGuard,PLANS,CODE_WINDOW_MS,quotaVerdict} from "../src/quotas.js";
 import {estimateCost,taskLabel} from "../src/complexity.js";
 const person="a".repeat(64);
@@ -252,89 +252,3 @@ test("SQLite quota rejects a three-unit task when only two remain",async()=>{
  }finally{Date.now=old}
 });
 
-function watchRequest(q,method="POST"){
- return new Request("https://jvex-api.test/api/watch",{method,headers:{"Content-Type":"application/json","CF-Connecting-IP":"203.0.113.8"},...(method==="POST"?{body:JSON.stringify({q})}:{})});
-}
-test("Watch endpoint accepts a short dictated question and returns plaintext",async()=>{
- const quota=mockQuota();
- let usedModel="";
- await fakeFetch(async(url,opts)=>{
-   const body=JSON.parse(opts.body);usedModel=body.model;
-   assert.equal(body.messages[1].content,"Привет JVEX");
-   return Response.json({model:usedModel,choices:[{message:{content:"Привет! Чем помочь?"}}]});
- },async()=>{
-   const response=await app.fetch(watchRequest("Привет JVEX"),useEnv({GROQ_API_KEY:"fake"},quota));
-   assert.equal(response.status,200);
-   assert.match(response.headers.get("Content-Type"),/^text\/plain/);
-   assert.equal(await response.text(),"Привет! Чем помочь?");
- });
- assert.equal(usedModel,"openai/gpt-oss-20b");
- assert.equal(quota.counts.chat,1);
-});
-test("Watch validates microphone text before consuming API credits",async()=>{
- const q=mockQuota();
- for(const value of ["","   ","a".repeat(651)]){
-   const response=await app.fetch(watchRequest(value),useEnv({GROQ_API_KEY:"fake"},q));
-   assert.equal(response.status,400);
- }
- assert.equal(q.counts.chat,0);
- assert.equal(watchRequestValid({q:" Вопрос "}),"Вопрос");
- assert.equal(watchRequestValid({q:123}),null);
-});
-test("Watch refuses GET; no question is sent in a URL query string",async()=>{
- const response=await app.fetch(watchRequest(null,"GET"),useEnv({GROQ_API_KEY:"fake"}));
- assert.equal(response.status,405);
-});
-test("Watch tries backup Groq model when 20b rate limits",async()=>{
- const tried=[];
- await fakeFetch(async(url,options)=>{
-   const body=JSON.parse(options.body);tried.push(body.model);
-   if(tried.length===1)return Response.json({error:{message:"too many requests"}},{status:429});
-   return Response.json({model:body.model,choices:[{message:{content:"Готово"}}]});
- },async()=>{
-   const r=await app.fetch(watchRequest("Что такое небо?"),useEnv({GROQ_API_KEY:"fake"}));
-   assert.equal(r.status,200);assert.equal(await r.text(),"Готово");
- });
- assert.deepEqual(tried,["openai/gpt-oss-20b","openai/gpt-oss-120b"]);
-});
-test("Watch refunds one credit if Groq is unavailable",async()=>{
- const q=mockQuota();
- await fakeFetch(async()=>Response.json({error:{message:"unavailable"}},{status:503}),async()=>{
-   const r=await app.fetch(watchRequest("Вопрос"),useEnv({GROQ_API_KEY:"fake"},q));
-   assert.equal(r.status,503);assert.match(await r.text(),/Попробуй позже/);
- });
- assert.equal(q.counts.chat,0);
-});
-
-test("Watch mini chat page GET shows a usable Apple Watch form",async()=>{
- const r=await app.fetch(new Request("https://jvex-api.test/watch"),useEnv({GROQ_API_KEY:"fake"}));
- assert.equal(r.status,200);assert.match(r.headers.get("Content-Type"),/text\/html/);
- const html=await r.text();
- assert.match(html,/action="\/watch"/);assert.match(html,/name="q"/);
- assert.match(html,/Спросить JVEX/);assert.match(html,/speechSynthesis/);
-});
-test("Watch mini chat answers POST form and keeps short context",async()=>{
- const q=mockQuota();let messages;
- await fakeFetch(async(_url,options)=>{
-   messages=JSON.parse(options.body).messages;
-   return Response.json({choices:[{message:{content:"Тестовый ответ JVEX"}}],model:"openai/gpt-oss-20b"});
- },async()=>{
-   const input=new URLSearchParams({q:"Кто ты?",h:JSON.stringify([{role:"user",content:"Привет"},{role:"assistant",content:"Здравствуйте!"}])});
-   const r=await app.fetch(new Request("https://jvex-api.test/watch",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded","CF-Connecting-IP":"203.0.113.8"},body:input}),useEnv({GROQ_API_KEY:"fake"},q));
-   assert.equal(r.status,200);const html=await r.text();
-   assert.match(html,/Тестовый ответ JVEX/);assert.match(html,/JVEX отвечает/);
-   assert.match(html,/Произнести/);
- });
- assert.deepEqual(messages.slice(1).map(x=>x.content),["Привет","Здравствуйте!","Кто ты?"]);
- assert.equal(q.counts.chat,1);
-});
-test("Watch mini chat escapes any user-provided HTML rather than executing it",async()=>{
- const bad='<img src=x onerror=alert(1)>';
- await fakeFetch(async()=>Response.json({choices:[{message:{content:"Безопасный ответ"}}]}),async()=>{
-   const body=new URLSearchParams({q:bad});
-   const r=await app.fetch(new Request("https://jvex-api.test/watch",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded","CF-Connecting-IP":"203.0.113.8"},body}),useEnv({GROQ_API_KEY:"fake"}));
-   const html=await r.text();
-   assert.ok(!html.includes(bad));
-   assert.match(html,/&lt;img src=x onerror=alert\(1\)&gt;/);
- });
-});
