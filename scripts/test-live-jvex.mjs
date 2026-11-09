@@ -31,6 +31,18 @@ async function verify(){
       throw Error("Watch voice API failed HTTP "+watch.status+": "+spoken.slice(0,100));
     console.log("JVEX WATCH spoken-text endpoint: SUCCESS");
     console.log("Watch reply: "+spoken.slice(0,120));
+    const watchPage=await fetch(base+"/watch",{signal:controller.signal});
+    const page=await watchPage.text();
+    if(!watchPage.ok||!watchPage.headers.get("Content-Type")?.includes("text/html")||!page.includes('action="/watch"'))
+      throw Error("Watch mini chat page failed HTTP "+watchPage.status);
+    console.log("JVEX WATCH direct browser chat: PAGE OK");
+    const question=new URLSearchParams({q:"Как меня зовут, если я не представлялся?"});
+    const watchForm=await fetch(base+"/watch",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:question,signal:controller.signal});
+    const answerPage=await watchForm.text();
+    if(!watchForm.ok||!answerPage.includes("JVEX отвечает")||!answerPage.includes("spoken"))
+      throw Error("Watch mini chat form failed HTTP "+watchForm.status+": "+answerPage.slice(0,120));
+    console.log("JVEX WATCH direct browser chat: GROQ ANSWER SUCCESS");
+
 
   }finally{clearTimeout(timer)}
 }
