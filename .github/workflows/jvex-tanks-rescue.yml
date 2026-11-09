@@ -1,0 +1,82 @@
+name: Independent JVEX Tanks generation challenge
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/jvex-tanks-rescue.yml'
+  workflow_dispatch:
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+  statuses: write
+concurrency:
+  group: jvex-tanks-challenge
+  cancel-in-progress: false
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Chromium for sandbox test
+        run: |
+          npm install --no-save playwright
+          npx playwright install --with-deps chromium
+      - name: Generate 2D Tanks with real JVEX API and check mobile gameplay
+        run: |
+          node --check scripts/jvex-tanks-rescue.mjs
+          node scripts/jvex-tanks-rescue.mjs
+      - name: Preserve tank test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jvex-tank-game-report
+          path: tank-results/
+          if-no-files-found: warn
+      - name: Commit verified game only
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add play/data/tanks.json
+          git commit -m "Publish independently browser-tested JVEX 2D Tanks"
+          git push origin HEAD:main
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
+      - id: deployment
+        uses: actions/deploy-pages@v4
+      - name: Test direct mobile Tanks link
+        run: |
+          node --input-type=module - <<'JS'
+          import {chromium} from "playwright";
+          const browser=await chromium.launch({headless:true,args:["--no-sandbox"]});
+          try{
+            let ok=false;
+            for(let i=0;i<8;i++){
+              const page=await browser.newPage({viewport:{width:390,height:844},isMobile:true,hasTouch:true});
+              try{
+                await page.goto("https://vivab.github.io/JVEX/play/?g=tanks",{waitUntil:"domcontentloaded",timeout:20000});
+                await page.locator("#message[hidden]").waitFor({state:"attached",timeout:6000});
+                await page.frameLocator("#frame").locator("canvas").waitFor({state:"attached",timeout:7000});
+                console.log("LIVE_GAME_TANKS_OK");ok=true;
+              }catch(e){console.log("TANKS_LIVE_RETRY "+String(e.message).slice(0,120));await new Promise(r=>setTimeout(r,3000))}
+              finally{await page.close()}
+              if(ok)break;
+            }
+            if(!ok)throw Error("Tanks live link did not load");
+          }finally{await browser.close()}
+          JS
+      - name: Report attempt
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          JOB_RESULT: ${{ job.status }}
+        run: |
+          if [ "$JOB_RESULT" = "success" ]; then state=success; else state=failure; fi
+          jq -nc --arg state "$state" --arg target "https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" '{state:$state,context:"JVEX / Tanks playtest",description:"AI Tank gameplay tested or failure explained",target_url:$target}' > /tmp/tanks-status.json
+          curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" -H "Content-Type: application/json" --data-binary @/tmp/tanks-status.json "https://api.github.com/repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" > /dev/null
