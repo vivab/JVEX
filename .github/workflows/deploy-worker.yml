@@ -4,6 +4,11 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/deploy-worker.yml'
+      - 'worker/src/**'
+      - 'worker/wrangler.toml'
+      - 'worker/test/**'
+      - 'assets/format.js'
+      - 'scripts/test-live-jvex.mjs'
   workflow_dispatch:
 permissions:
   contents: read
