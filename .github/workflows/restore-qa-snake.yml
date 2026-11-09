@@ -12,7 +12,7 @@ permissions:
   id-token: write
   statuses: write
 concurrency:
-  group: pages
+  group: jvex-snake-restore
   cancel-in-progress: false
 jobs:
   restore:
