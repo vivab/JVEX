@@ -305,3 +305,36 @@ test("Watch refunds one credit if Groq is unavailable",async()=>{
  });
  assert.equal(q.counts.chat,0);
 });
+
+test("Watch mini chat page GET shows a usable Apple Watch form",async()=>{
+ const r=await app.fetch(new Request("https://jvex-api.test/watch"),useEnv({GROQ_API_KEY:"fake"}));
+ assert.equal(r.status,200);assert.match(r.headers.get("Content-Type"),/text\/html/);
+ const html=await r.text();
+ assert.match(html,/action="\/watch"/);assert.match(html,/name="q"/);
+ assert.match(html,/Спросить JVEX/);assert.match(html,/speechSynthesis/);
+});
+test("Watch mini chat answers POST form and keeps short context",async()=>{
+ const q=mockQuota();let messages;
+ await fakeFetch(async(_url,options)=>{
+   messages=JSON.parse(options.body).messages;
+   return Response.json({choices:[{message:{content:"Тестовый ответ JVEX"}}],model:"openai/gpt-oss-20b"});
+ },async()=>{
+   const input=new URLSearchParams({q:"Кто ты?",h:JSON.stringify([{role:"user",content:"Привет"},{role:"assistant",content:"Здравствуйте!"}])});
+   const r=await app.fetch(new Request("https://jvex-api.test/watch",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded","CF-Connecting-IP":"203.0.113.8"},body:input}),useEnv({GROQ_API_KEY:"fake"},q));
+   assert.equal(r.status,200);const html=await r.text();
+   assert.match(html,/Тестовый ответ JVEX/);assert.match(html,/JVEX отвечает/);
+   assert.match(html,/Произнести/);
+ });
+ assert.deepEqual(messages.slice(1).map(x=>x.content),["Привет","Здравствуйте!","Кто ты?"]);
+ assert.equal(q.counts.chat,1);
+});
+test("Watch mini chat escapes any user-provided HTML rather than executing it",async()=>{
+ const bad='<img src=x onerror=alert(1)>';
+ await fakeFetch(async()=>Response.json({choices:[{message:{content:"Безопасный ответ"}}]}),async()=>{
+   const body=new URLSearchParams({q:bad});
+   const r=await app.fetch(new Request("https://jvex-api.test/watch",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded","CF-Connecting-IP":"203.0.113.8"},body}),useEnv({GROQ_API_KEY:"fake"}));
+   const html=await r.text();
+   assert.ok(!html.includes(bad));
+   assert.match(html,/&lt;img src=x onerror=alert\(1\)&gt;/);
+ });
+});
