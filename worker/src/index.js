@@ -1,5 +1,6 @@
 // JVEX: Cloudflare Worker backend. Secrets must be set with wrangler secret put.
 import { PLANS } from "./quotas.js";
+import { estimateCost, taskLabel } from "./complexity.js";
 export { QuotaGuard } from "./quotas.js";
 async function anonIdentity(request,env){
   const ip=request.headers.get("CF-Connecting-IP");
@@ -8,15 +9,15 @@ async function anonIdentity(request,env){
   const digest=await crypto.subtle.digest("SHA-256",bytes);
   return Array.from(new Uint8Array(digest),b=>b.toString(16).padStart(2,"0")).join("");
 }
-async function quotaAction(env,id,action,lane){
+async function quotaAction(env,id,action,lane,units=1){
   if(!env.QUOTA_GUARD)throw Error("Quota storage binding is missing");
   const stub=env.QUOTA_GUARD.get(env.QUOTA_GUARD.idFromName("jvex-public-quotas"));
-  const res=await stub.fetch("https://quota.internal/action",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id,action,lane})});
+  const res=await stub.fetch("https://quota.internal/action",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id,action,lane,units})});
   const data=await res.json();
   if(!res.ok)throw Error(data.error||"Quota storage unavailable");
   return data;
 }
-const BASE = "Ты — JVEX, единый интеллектуальный ассистент. Отвечай на языке пользователя. Пиши точно, понятно и честно. Не называй себя моделью другого сервиса, но если прямо спросили об используемой модели, сообщи известное имя. Учитывай всю переданную историю диалога. Не выдумывай результаты веб-поиска, GitHub, тестов и других инструментов. Пиши естественно и без лишних выделений жирным: не оборачивай почти каждую строку в двойные звёздочки. Если пользователь просит создать файл, выдавай полный файл в блоке кода с указанием пути: три обратных апострофа, затем язык и file=имя. Например язык html file=index.html, затем полный код, затем закрывающие три обратных апострофа. Для нескольких файлов показывай отдельные блоки. Никогда не заменяй части кода многоточием или фразой «остальной код»; если не помещается, честно напиши, что нужен следующий ответ. В режиме Code объясняй и генерируй качественный код.";
+const BASE = "Ты — JVEX, единый интеллектуальный ассистент. Отвечай на языке пользователя. Пиши точно, понятно и честно. Не называй себя моделью другого сервиса, но если прямо спросили об используемой модели, сообщи известное имя. Учитывай всю переданную историю диалога. Не выдумывай результаты веб-поиска, GitHub, тестов и других инструментов. Пиши естественно и без лишних выделений жирным: не оборачивай почти каждую строку в двойные звёздочки. Если пользователь просит создать файл, выдавай полный файл в блоке кода с указанием пути: три обратных апострофа, затем язык и file=имя. Например язык html file=index.html, затем полный код, затем закрывающие три обратных апострофа. Для нескольких файлов показывай отдельные блоки. Никогда не заменяй части кода многоточием или фразой «остальной код»; если не помещается, честно напиши, что нужен следующий ответ. В режиме Code объясняй и генерируй качественный код. Для сложных задач сначала кратко опиши подход в 2–4 понятных пунктах, затем дай результат. Это краткое объяснение плана, а не скрытые внутренние рассуждения.";
 const result=(data,status=200,headers={})=>new Response(JSON.stringify(data),{status,headers:{"Content-Type":"application/json; charset=utf-8","Cache-Control":"no-store",...headers}});
 function cors(request,env){const origin=request.headers.get("Origin")||"",allowed=(env.ALLOWED_ORIGIN||"").replace(/\/$/,""),local=/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);return {"Access-Control-Allow-Origin":origin&&(origin===allowed||local)?origin:"null","Access-Control-Allow-Headers":"Content-Type,X-JVEX-Access","Access-Control-Allow-Methods":"GET,POST,OPTIONS","Vary":"Origin"}}
 function isUrl(url){try{return new URL(url).protocol==="https:"}catch{return false}}
@@ -68,13 +69,14 @@ let messages=payload.messages.filter(m=>m&&["user","assistant"].includes(m.role)
 if(!last||last.role!=="user")return result({error:"Нет сообщения пользователя."},400,h);
 if(messages.some(m=>m.content.length>14000||(m.image&&String(m.image).length>1500000)))return result({error:"Сообщение слишком большое."},413,h);
 let image=messages.some(m=>!!m.image),code=payload.mode==="code",needSearch=payload.search==="on"||(payload.search!=="off"&&autoSearch(last.content));
+const cost=estimateCost({mode:code?"code":"chat",text:last.content,image});
 // Reserve the quota before web search, model API calls or expensive GitHub reads.
 let reservation;
-try{reservation=await quotaAction(env,anon,"reserve",code?"code":"chat")}
+try{reservation=await quotaAction(env,anon,"reserve",code?"code":"chat",cost)}
 catch{return result({error:"Хранилище лимитов недоступно. Запрос заблокирован для защиты API."},503,h)}
 if(!reservation.allowed){
  const details=reservation.reason==="user"?"Лимит Free исчерпан.":reservation.reason==="global"?"Общий дневной лимит JVEX исчерпан.":"Слишком много сообщений подряд.";
- return result({error:details,code:"QUOTA_EXCEEDED",reason:reservation.reason,usage:reservation,retryAfter:reservation.retryAfter||60},429,{...h,"Retry-After":String(reservation.retryAfter||60)});
+ return result({error:details,code:"QUOTA_EXCEEDED",reason:reservation.reason,cost,usage:reservation,retryAfter:reservation.retryAfter||60},429,{...h,"Retry-After":String(reservation.retryAfter||60)});
 }
 let sources=needSearch?await tavily(last.content,env):[];
 let sys=BASE+(code?"\nРежим JVEX Code. Можно прочитать публичный GitHub, но нельзя редактировать репозиторий или запускать тесты. Не заявляй обратное.":"");
@@ -103,10 +105,10 @@ if(image){
 }
 if(!needSearch||sources.length){const pref=String(payload.preference||"auto").toLowerCase();if(["groq","openrouter","gemini"].includes(pref))attempts.sort((a,b)=>(a[0].toLowerCase()===pref?-1:b[0].toLowerCase()===pref?1:0))}
 if(!attempts.length){
- try{await quotaAction(env,anon,"refund",code?"code":"chat")}catch{}
+ try{await quotaAction(env,anon,"refund",code?"code":"chat",cost)}catch{}
  return result({error:"Нет настроенных API-ключей моделей."},503,h);
 }
-const problems=[];for(const [name,call] of attempts){try{let data=await call(),refs=(data.sources||[]).length?data.sources:sources.map(s=>({title:s.title,url:s.url}));return result({answer:data.answer,model:name+" / "+data.model,sources:refs,searched:refs.length>0,usage:reservation,githubRepository:linkedRepository},200,h)}catch(e){problems.push(name+" "+String(e.message||e).replace(/[^a-zA-Z0-9 :/-]/g,"").slice(0,40))}}
+const problems=[];for(const [name,call] of attempts){try{let data=await call(),refs=(data.sources||[]).length?data.sources:sources.map(s=>({title:s.title,url:s.url}));return result({answer:data.answer,model:name+" / "+data.model,sources:refs,searched:refs.length>0,cost,activity:{reading:"Запрос прочитан",context:linkedRepository?"Учтён публичный GitHub: "+linkedRepository:sources.length?"Проверены веб-источники":"Учтён контекст диалога",writing:taskLabel({mode:code?"code":"chat",text:last.content,image})},usage:reservation,githubRepository:linkedRepository},200,h)}catch(e){problems.push(name+" "+String(e.message||e).replace(/[^a-zA-Z0-9 :/-]/g,"").slice(0,40))}}
 try{await quotaAction(env,anon,"refund",code?"code":"chat")}catch{}
 return result({error:problems.every(x=>x.includes("HTTP 429"))?"Сейчас достигнут лимит Groq. Попробуй позже — доступные модели уже проверены автоматически.":"ИИ временно недоступен. Попробуй немного позже.",code:"UPSTREAM_UNAVAILABLE"},503,h);
 }};
