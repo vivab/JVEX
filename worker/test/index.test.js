@@ -1,6 +1,6 @@
 import {test} from "node:test";
 import assert from "node:assert/strict";
-import app from "../src/index.js";
+import app,{githubRepositoryFromMessages} from "../src/index.js";
 import {QuotaGuard,PLANS,CODE_WINDOW_MS,quotaVerdict} from "../src/quotas.js";
 const person="a".repeat(64);
 const baseEnv={ALLOWED_ORIGIN:"https://vivab.github.io",QUOTA_SALT:"test-unique-salt-for-quota"};
@@ -169,4 +169,21 @@ test("Chat slots reset at UTC midnight independently of Code",async()=>{
     assert.equal(status.used.chat,0);
     assert.equal(status.used.code,1);
   }finally{Date.now=original}
+});
+
+
+test("JVEX Code picks up a direct GitHub URL from chat",()=>{
+  assert.equal(githubRepositoryFromMessages([{role:"user",content:"Посмотри https://github.com/vivab/JVEX"}]),"vivab/JVEX");
+});
+test("JVEX Code accepts GitHub file links, .git URLs, and trailing punctuation",()=>{
+  assert.equal(githubRepositoryFromMessages([{role:"user",content:"Исправь https://github.com/vivab/Game1/blob/main/index.html."}]),"vivab/Game1");
+  assert.equal(githubRepositoryFromMessages([{role:"user",content:"https://github.com/vivab/JVEX.git"}]),"vivab/JVEX");
+});
+test("JVEX Code remembers latest repository from earlier user messages",()=>{
+  const history=[{role:"user",content:"https://github.com/example/first"},{role:"assistant",content:"Готов изучить"},{role:"user",content:"https://github.com/vivab/JVEX"},{role:"user",content:"А теперь проверь ошибки"}];
+  assert.equal(githubRepositoryFromMessages(history),"vivab/JVEX");
+});
+test("JVEX Code ignores arbitrary URLs and fake github hostnames",()=>{
+  assert.equal(githubRepositoryFromMessages([{role:"user",content:"https://notgithub.com/a/b"}]),null);
+  assert.equal(githubRepositoryFromMessages([{role:"user",content:"https://example.org/vivab/JVEX"}]),null);
 });
