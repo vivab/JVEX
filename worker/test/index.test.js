@@ -1,6 +1,6 @@
 import {test} from "node:test";
 import assert from "node:assert/strict";
-import app,{githubRepositoryFromMessages,groqCandidates} from "../src/index.js";
+import app,{githubRepositoryFromMessages,groqCandidates,openRouterFreeCandidates} from "../src/index.js";
 import {QuotaGuard,PLANS,CODE_WINDOW_MS,quotaVerdict} from "../src/quotas.js";
 import {estimateCost,taskLabel} from "../src/complexity.js";
 const person="a".repeat(64);
@@ -81,13 +81,16 @@ test("photo enters Gemini as inline image",async()=>{
   });
   assert.equal(payload.contents[0].parts[1].inline_data.mime_type,"image/jpeg");
 });
-test("Gemini grounding first for time-sensitive search",async()=>{
+test("Gemini is preferred for chat without silently enabling paid Search grounding",async()=>{
   let first;
-  await fakeFetch(async(url,options)=>{first=String(url);assert.ok(JSON.parse(options.body).tools[0].google_search);return Response.json({candidates:[{content:{parts:[{text:"Новости"}]},groundingMetadata:{groundingChunks:[{web:{uri:"https://example.com",title:"Новости"}}]}}]})},async()=>{
+  await fakeFetch(async(url,options)=>{first=String(url);assert.equal(JSON.parse(options.body).tools,undefined);return Response.json({candidates:[{content:{parts:[{text:"Ответ без платного поиска"}]}}]})},async()=>{
     const r=await app.fetch(request([{role:"user",content:"Новости сегодня"}],{search:"auto"}),useEnv({GEMINI_API_KEY:"fake",GROQ_API_KEY:"fake"}));
-    assert.equal(r.status,200);assert.equal((await r.json()).searched,true);
+    assert.equal(r.status,200);
+    const reply=await r.json();
+    assert.equal(reply.searched,false);
+    assert.match(reply.model,/Gemini/);
   });
-  assert.match(first,/generativelanguage/);
+  assert.match(first,/gemini-3\.8-flash/);
 });
 test("Code lane uses separate quota",async()=>{
   const q=mockQuota();await fakeFetch(async()=>Response.json({model:"free",choices:[{message:{content:"код"}}]}),async()=>{
@@ -356,4 +359,81 @@ test("Web search cannot be turned off by old browser preferences",async()=>{
   const r=await app.fetch(request([{role:"user",content:"Привет"}],{search:"off"}),useEnv({GROQ_API_KEY:"fake"},q));
   assert.equal(r.status,200);
  });
+});
+
+test("Only free OpenRouter model IDs are selected for JVEX",()=>{
+ assert.deepEqual(openRouterFreeCandidates("code"),["qwen/qwen3.6-plus:free","qwen/qwen3.8-27b:free","openrouter/free"]);
+ assert.deepEqual(openRouterFreeCandidates("vision"),["qwen/qwen3.6-plus:free","qwen/qwen3.8-27b:free"]);
+ assert.equal(openRouterFreeCandidates("code","deepseek/deepseek-v4-pro")[0],"qwen/qwen3.6-plus:free");
+ assert.equal(openRouterFreeCandidates("code","qwen/qwen3.8-27b:free")[0],"qwen/qwen3.8-27b:free");
+});
+test("OpenRouter Qwen 3.6 Plus is preferred for JVEX Code when configured",async()=>{
+ let firstUrl,firstBody;
+ await fakeFetch(async(url,options)=>{
+  firstUrl=String(url);firstBody=JSON.parse(options.body);
+  return Response.json({model:"qwen/qwen3.6-plus:free",choices:[{message:{content:"Полный HTML игровой проект"}}]});
+ },async()=>{
+  const r=await app.fetch(request([{role:"user",content:"Сделай полноценную игру танки"}],{mode:"code"}),useEnv({OPENROUTER_API_KEY:"test",GROQ_API_KEY:"test",GEMINI_API_KEY:"test"}));
+  assert.equal(r.status,200);
+  const data=await r.json();
+  assert.match(data.model,/OpenRouter \/ qwen\/qwen3.6-plus:free/);
+  assert.match(data.answer,/Полный HTML/);
+ });
+ assert.match(firstUrl,/openrouter.ai/);
+ assert.equal(firstBody.model,"qwen/qwen3.6-plus:free");
+ assert.equal(firstBody.max_tokens,8500);
+});
+test("Code with no OpenRouter key still chooses Groq Qwen and needs no new keys",async()=>{
+ let body;
+ await fakeFetch(async(_url,options)=>{body=JSON.parse(options.body);return Response.json({model:body.model,choices:[{message:{content:"Код"}}]})},async()=>{
+  const r=await app.fetch(request([{role:"user",content:"Создай сайт"}],{mode:"code"}),useEnv({GROQ_API_KEY:"test"}));
+  assert.equal(r.status,200);
+ });
+ assert.equal(body.model,"qwen/qwen3.8-27b");
+ assert.equal(body.max_completion_tokens,6500);
+});
+test("Free OpenRouter request limit skips further OpenRouter variants and falls back to Groq",async()=>{
+ const attempts=[];
+ await fakeFetch(async(url,options)=>{
+  const provider=String(url).includes("openrouter.ai")?"OpenRouter":"Groq";
+  attempts.push(provider);
+  if(provider==="OpenRouter")return Response.json({error:{message:"rate limit"}},{status:429});
+  const input=JSON.parse(options.body);
+  return Response.json({model:input.model,choices:[{message:{content:"Всё работает"}}]});
+ },async()=>{
+  const r=await app.fetch(request([{role:"user",content:"Создай 2D игру"}],{mode:"code"}),useEnv({OPENROUTER_API_KEY:"test",GROQ_API_KEY:"test"}));
+  assert.equal(r.status,200);
+  assert.match((await r.json()).model,/Groq/);
+ });
+ assert.deepEqual(attempts,["OpenRouter","Groq"]);
+});
+test("API health shows active model routing and never returns secret values",async()=>{
+ const all=await app.fetch(new Request("https://jvex-api.test/api/health"),useEnv({OPENROUTER_API_KEY:"secret-openrouter",GROQ_API_KEY:"secret-groq",GEMINI_API_KEY:"secret-gemini"}));
+ assert.equal(all.status,200);
+ const d=await all.json();
+ assert.equal(d.routing.code,"qwen/qwen3.6-plus:free");
+ assert.equal(d.routing.chat,"gemini-3.8-flash");
+ assert.equal(d.routing.vision,"gemini-3.8-flash");
+ assert.equal(d.freeOnlyOpenRouter,true);
+ assert.ok(!JSON.stringify(d).includes("secret-"));
+ const basic=await app.fetch(new Request("https://jvex-api.test/api/health"),useEnv({GROQ_API_KEY:"abc"}));
+ const simple=await basic.json();
+ assert.equal(simple.providers.openrouter,false);
+ assert.equal(simple.providers.gemini,false);
+ assert.equal(simple.routing.chat,"openai/gpt-oss-20b");
+ assert.equal(simple.routing.code,"qwen/qwen3.8-27b");
+});
+test("OpenRouter free Qwen Plus accepts a photo when Gemini and Groq are absent",async()=>{
+ let sent;
+ await fakeFetch(async(url,options)=>{
+  assert.match(String(url),/openrouter.ai/);
+  sent=JSON.parse(options.body);
+  return Response.json({model:sent.model,choices:[{message:{content:"На фото кот"}}]});
+ },async()=>{
+  const r=await app.fetch(request([{role:"user",content:"Что изображено?",image:"data:image/png;base64,SGVsbG8="}]),useEnv({OPENROUTER_API_KEY:"test"}));
+  assert.equal(r.status,200);
+  assert.match((await r.json()).answer,/кот/);
+ });
+ assert.equal(sent.model,"qwen/qwen3.6-plus:free");
+ assert.ok(Array.isArray(sent.messages.at(-1).content));
 });
