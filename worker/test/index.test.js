@@ -298,3 +298,62 @@ test("Gemini preference uses current Flash model and remains server-side",async(
  });
  assert.match(url,/gemini-3\.8-flash:generateContent/);
 });
+
+function audioRequest(blobOrFile,extra={}){
+ const form=new FormData();form.append("audio",blobOrFile,"audio.webm");
+ return new Request("https://jvex-api.example.workers.dev/api/transcribe",{
+  method:"POST",headers:{"CF-Connecting-IP":"203.0.113.8",Origin:"https://vivab.github.io"},body:form,...extra
+ });
+}
+test("Groq Whisper push-to-talk audio returns text without exposing key",async()=>{
+ const q=mockQuota();let incoming;
+ await fakeFetch(async(url,opts)=>{
+  assert.equal(String(url),"https://api.groq.com/openai/v1/audio/transcriptions");
+  assert.equal(opts.headers.Authorization,"Bearer hidden-key");
+  incoming=opts.body;
+  return Response.json({text:"Привет, сделай игру"});
+ },async()=>{
+  const r=await app.fetch(audioRequest(new File([new Uint8Array(600)],"audio.webm",{type:"audio/webm"})),useEnv({GROQ_API_KEY:"hidden-key"},q));
+  const data=await r.json();
+  assert.equal(r.status,200);assert.equal(data.text,"Привет, сделай игру");
+  assert.equal(data.cost,1);assert.equal(q.counts.chat,1);
+  assert.equal(JSON.stringify(data).includes("hidden-key"),false);
+ });
+ assert.equal(incoming.get("model"),"whisper-large-v3-turbo");
+ assert.equal(incoming.get("file").name,"recording.webm");
+});
+test("Transcription rejects non-audio before any credit is reserved",async()=>{
+ const q=mockQuota();
+ const r=await app.fetch(audioRequest(new File(["<html>evil</html>"],"a.html",{type:"text/html"})),useEnv({GROQ_API_KEY:"fake"},q));
+ assert.equal(r.status,415);assert.equal(q.counts.chat,0);
+});
+test("Groq Whisper error fully refunds transcript cost",async()=>{
+ const q=mockQuota();
+ await fakeFetch(async()=>Response.json({error:{message:"limited"}},{status:429}),async()=>{
+  const r=await app.fetch(audioRequest(new File([new Uint8Array(600)],"a.webm",{type:"audio/webm"})),useEnv({GROQ_API_KEY:"fake"},q));
+  assert.equal(r.status,503);
+ });
+ assert.equal(q.counts.chat,0);
+});
+test("Text file attachment is included in the model input and not lost",async()=>{
+ let sent;const q=mockQuota();
+ await fakeFetch(async(_url,opts)=>{
+  sent=JSON.parse(opts.body);
+  return Response.json({model:"openai/gpt-oss-20b",choices:[{message:{content:"Код изучил"}}]});
+ },async()=>{
+  const r=await app.fetch(request([{role:"user",content:"Объясни файл",file:{name:"test.js",text:"console.log('hello')"}}],{mode:"chat"}),useEnv({GROQ_API_KEY:"fake"},q));
+  assert.equal(r.status,200);
+  assert.equal((await r.json()).cost,2);
+ });
+ assert.match(sent.messages[1].content,/test\.js/);
+ assert.match(sent.messages[1].content,/console\.log\('hello'\)/);
+});
+test("Web search cannot be turned off by old browser preferences",async()=>{
+ const q=mockQuota();
+ await fakeFetch(async(_url,opts)=>{
+  return Response.json({model:"openai/gpt-oss-20b",choices:[{message:{content:"Хорошо"}}]});
+ },async()=>{
+  const r=await app.fetch(request([{role:"user",content:"Привет"}],{search:"off"}),useEnv({GROQ_API_KEY:"fake"},q));
+  assert.equal(r.status,200);
+ });
+});
