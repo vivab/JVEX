@@ -27,7 +27,10 @@ try{
  await page.locator("#attachToggle").click();
  assert.equal(await page.locator("#attachMenu").isVisible(),true,"Plus opens attachment menu");
  assert.equal(await page.locator("#pickFile").isVisible(),true,"File option is present");
- await page.locator("#fileInput").setInputFiles({name:"test.js",mimeType:"text/javascript",buffer:Buffer.from("console.log('JVEX');")});
+ const chooserPromise=page.waitForEvent("filechooser");
+ await page.locator("#pickFile").click();
+ const chooser=await chooserPromise;
+ await chooser.setFiles({name:"test.js",mimeType:"text/javascript",buffer:Buffer.from("console.log('JVEX');")});
  await page.waitForSelector(".preview .attachment-chip",{state:"visible",timeout:8000});
  assert.equal(await page.locator("#send").getAttribute("data-action"),"send");
  await page.locator(".preview .attachment-chip button").click();
