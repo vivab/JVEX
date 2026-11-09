@@ -1,0 +1,18 @@
+name: Inspect JVEX Groq models and limits
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/groq-inventory.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspect Groq model IDs and limits
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: node scripts/inspect-groq.mjs
