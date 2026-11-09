@@ -12,17 +12,17 @@ header{height:66px;display:flex;align-items:center;gap:9px;padding:8px 14px;back
 .logo{font-weight:900;background:#16b56d;color:#081a0e;border-radius:9px;padding:8px 10px}
 small{font-size:11px;color:#a1b8a6}
 h1{font-size:16px;margin:0;font-weight:650}
-select,button,a{font:inherit}select{margin-left:auto;max-width:144px;min-width:93px;padding:10px 7px;border:1px solid #32553b;border-radius:10px;background:#1a3726;color:#fff}
+select,button,a{font:inherit}button.restart{flex:none;width:36px;height:36px;display:grid;place-items:center;border:1px solid #32553b;border-radius:10px;background:#1a3726;color:#dcf3df;font-size:24px;cursor:pointer;transition:background .2s}button.restart:active{background:#27633c}select{margin-left:auto;max-width:144px;min-width:93px;padding:10px 7px;border:1px solid #32553b;border-radius:10px;background:#1a3726;color:#fff}
 a{color:#8bebb1;text-decoration:none;font-size:12px}
 main{height:calc(100dvh - 66px);position:relative;min-height:300px;padding:8px;display:flex}
 iframe{display:block;width:100%;height:100%;border:0;border-radius:10px;background:#101e14}
 #message{position:absolute;inset:8px;display:flex;align-items:center;justify-content:center;text-align:center;padding:20px;font-size:14px;background:#12271b;border-radius:10px;z-index:2}
 #message[hidden]{display:none}
-@media(max-width:400px){header{padding:8px 8px;gap:6px}.logo{padding:6px 8px}h1{font-size:13px}small{font-size:10px}select{font-size:12px;max-width:123px}a{font-size:11px}}
+@media(max-width:400px){header{padding:8px 8px;gap:6px}a{display:none}.logo{padding:6px 8px}h1{font-size:13px}small{font-size:10px}select{font-size:12px;max-width:123px}a{font-size:11px}}
 </style>
 </head><body>
 <header><span class="logo">J</span><div><h1>JVEX • Игры</h1><small>Сгенерировано ИИ · безопасная песочница</small></div>
-<select id="game" aria-label="Выбери игру"><option value="snake">🐍 Змейка</option><option value="snake-qwen">🐍 Змейка Qwen</option><option value="tanks">🛡 Танки</option><option value="pong">🏓 Пинг-понг</option><option value="breakout">🧱 Арканоид</option></select>
+<button class="restart" id="reload" type="button" title="Перезапустить игру" aria-label="Перезапустить игру">↻</button><select id="game" aria-label="Выбери игру"><option value="snake">🐍 Змейка</option><option value="snake-qwen">🐍 Змейка Qwen</option><option value="tanks">🛡 Танки</option><option value="pong">🏓 Пинг-понг</option><option value="breakout">🧱 Арканоид</option></select>
 <a href="../">JVEX AI</a></header>
 <main><div id="message" role="status">Загружаю игру…</div><iframe id="frame" title="Игра JVEX" sandbox="allow-scripts" referrerpolicy="no-referrer"></iframe></main>
 <script>
@@ -31,6 +31,7 @@ const choices=["snake","snake-qwen","tanks","pong","breakout"];
 const query=new URLSearchParams(location.search),requested=query.get("g");
 const chosen=choices.includes(requested)?requested:"snake";
 const select=document.getElementById("game"),message=document.getElementById("message"),frame=document.getElementById("frame");
+let loadedContent="";document.getElementById("reload").addEventListener("click",()=>{if(loadedContent){frame.srcdoc=loadedContent;message.hidden=true}});
 select.value=chosen;
 select.addEventListener("change",()=>{location.search="?g="+encodeURIComponent(select.value)});
 async function launch(){
@@ -42,7 +43,8 @@ async function launch(){
    if(!game||game.id!==chosen||typeof game.html!=="string"||game.html.length>140000)throw Error("Файл игры повреждён.");
    const csp="<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'; media-src 'none'; form-action 'none'; base-uri 'none'\">";
    const body=game.html.replace(/<head(?:\s[^>]*)?>/i,m=>m+csp);
-   frame.srcdoc=body===game.html?csp+game.html:body;
+   loadedContent=body===game.html?csp+game.html:body;
+   frame.srcdoc=loadedContent;
    message.hidden=true;
    document.title=game.title+" — Игры JVEX";
  }catch(e){message.textContent=e.message||"Не удалось открыть игру."}
