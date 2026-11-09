@@ -5,14 +5,14 @@
  */
 export const CODE_WINDOW_MS = 5 * 60 * 60 * 1000;
 export const PLANS = Object.freeze([
-  {id:"free",title:"JVEX Free",chat:20,code:3,active:true},
+  {id:"free",title:"JVEX Free",chat:60,code:10,active:true},
   {id:"plus",title:"JVEX Plus",chat:100,code:20,active:false},
   {id:"pro",title:"JVEX Pro",chat:300,code:60,active:false},
   {id:"premium",title:"JVEX Premium",chat:1000,code:250,active:false},
   {id:"code",title:"JVEX Code",chat:40,code:200,active:false}
 ]);
 export const FREE_PLAN = PLANS[0];
-export const DEFAULT_GLOBAL = Object.freeze({chat:300,code:45});
+export const DEFAULT_GLOBAL = Object.freeze({chat:600,code:150});
 export const DEFAULT_MINUTE_LIMIT = 4;
 export function utcDay(date=new Date()){return date.toISOString().slice(0,10)}
 export function nextUtcMidnight(date=new Date()){
