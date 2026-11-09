@@ -39,7 +39,7 @@ try{
   await page.route("**/*",route=>route.abort());
   const csp='<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; script-src \'unsafe-inline\'; style-src \'unsafe-inline\'; img-src data: blob:; connect-src \'none\'; form-action \'none\'">';
   const patched=html.replace(/<head(?:\s[^>]*)?>/i,m=>m+csp);
-  await page.setContent('<iframe id="game" sandbox="allow-scripts" style="width:100%;height:820px;border:0"></iframe>');
+  await page.setContent('<meta name="viewport" content="width=device-width,initial-scale=1"><iframe id="game" sandbox="allow-scripts" style="width:100%;height:820px;border:0"></iframe>');
   await page.locator("#game").evaluate((el,v)=>el.srcdoc=v,patched);
   const frame=page.frameLocator("#game");
   await frame.locator("canvas").waitFor({state:"attached",timeout:8000});
