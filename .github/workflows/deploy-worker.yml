@@ -57,6 +57,8 @@ jobs:
               printf '%s' "$value" | npx --yes wrangler@4 secret put "$secret" --name jvex-api
             fi
           done
+      - name: Verify live JVEX chat with Groq
+        run: node scripts/test-live-jvex.mjs
       - name: Report Cloudflare deployment outcome
         if: always()
         env:
