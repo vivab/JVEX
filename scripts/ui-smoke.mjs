@@ -28,7 +28,7 @@ try{
  assert.equal(await page.locator("#attachMenu").isVisible(),true,"Plus opens attachment menu");
  assert.equal(await page.locator("#pickFile").isVisible(),true,"File option is present");
  await page.locator("#fileInput").setInputFiles({name:"test.js",mimeType:"text/javascript",buffer:Buffer.from("console.log('JVEX');")});
- assert.equal(await page.locator(".preview .attachment-chip").isVisible(),true);
+ await page.waitForSelector(".preview .attachment-chip",{state:"visible",timeout:8000});
  assert.equal(await page.locator("#send").getAttribute("data-action"),"send");
  await page.locator(".preview .attachment-chip button").click();
  assert.equal(await page.locator("#send").getAttribute("data-action"),"mic");
