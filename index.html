@@ -69,22 +69,27 @@
 "use strict";
 const $=s=>document.getElementById(s),store="jvex-chats-v1",settingsKey="jvex-settings-v1",API_BASE="https://jvex-api.vivogaga12.workers.dev";
 function read(key,fallback){try{return JSON.parse(localStorage.getItem(key))||fallback}catch{return fallback}}
-let chats=read(store,[]),cfg=Object.assign({accent:"#11a66a",dark:false,web:"auto",provider:"auto",groqModel:"auto"},read(settingsKey,{})),active=null,mode="chat",image=null,busy=false;
-if(!Array.isArray(chats))chats=[];if(Object.prototype.hasOwnProperty.call(cfg,"url")){delete cfg.url;saveCfg()}if(Object.prototype.hasOwnProperty.call(cfg,"repo")){delete cfg.repo;saveCfg()}if(Object.prototype.hasOwnProperty.call(cfg,"pass")){delete cfg.pass;saveCfg()}
+let chats=read(store,[]),cfg=Object.assign({accent:"#11a66a",dark:false,provider:"auto",groqModel:"auto"},read(settingsKey,{})),active=null,mode="chat",image=null,attachment=null,busy=false,voiceStage="idle";
+if(!Array.isArray(chats))chats=[];if("web" in cfg){delete cfg.web;saveCfg()}if(Object.prototype.hasOwnProperty.call(cfg,"url")){delete cfg.url;saveCfg()}if(Object.prototype.hasOwnProperty.call(cfg,"repo")){delete cfg.repo;saveCfg()}if(Object.prototype.hasOwnProperty.call(cfg,"pass")){delete cfg.pass;saveCfg()}
 function saveChats(){try{localStorage.setItem(store,JSON.stringify(chats))}catch{alert("Недостаточно места: экспортируйте или удалите старые чаты")}}
 function saveCfg(){localStorage.setItem(settingsKey,JSON.stringify(cfg))}
 function theme(){document.documentElement.style.setProperty("--accent",cfg.accent);document.body.classList.toggle("dark",cfg.dark);$("state").textContent="JVEX AI"}
 function menu(open){$("sidebar").classList.toggle("open",open);$("veil").classList.toggle("open",open)}
 function selected(){return chats.find(c=>c.id===active)}
 function setMode(value){mode=value;quotedCost();$("welcomeSubtitle").textContent=mode==="code"?"Пришли ссылку на GitHub прямо сюда — изучу публичный репозиторий и помогу с кодом.":"Единый интеллект для любых идей и задач";$("chatMode").classList.toggle("on",mode==="chat");$("codeMode").classList.toggle("on",mode==="code");$("prompt").placeholder=mode==="code"?"Пришли ссылку GitHub или опиши задачу для JVEX Code...":"Спроси JVEX о чём угодно..."}
-function fresh(){active=null;image=null;$("prompt").value="";preview();render();menu(false)}
-function preview(){quotedCost();let p=$("preview");p.replaceChildren();p.hidden=!image;if(image){let el=document.createElement("img");el.src=image;let remove=document.createElement("button");remove.textContent="× Убрать";remove.type="button";remove.onclick=()=>{image=null;$("photo").value="";preview()};p.append(el,remove)}}
+function fresh(){active=null;image=null;attachment=null;$("prompt").value="";preview();render();menu(false)}
+function preview(){
+ quotedCost();let p=$("preview");p.replaceChildren();p.hidden=!image&&!attachment;
+ if(image){let photo=document.createElement("img");photo.src=image;photo.alt="Фото";let remove=document.createElement("button");remove.textContent="× Убрать фото";remove.type="button";remove.onclick=()=>{image=null;$("photo").value="";preview()};p.append(photo,remove)}
+ if(attachment){let chip=document.createElement("div");chip.className="attachment-chip";let name=document.createElement("span");name.className="attachment-name";name.textContent="▤ "+attachment.name;let remove=document.createElement("button");remove.type="button";remove.textContent="×";remove.setAttribute("aria-label","Убрать файл");remove.onclick=()=>{attachment=null;$("fileInput").value="";preview()};chip.append(name,remove);p.append(chip)}
+}
 function history(){let el=$("history");el.replaceChildren();if(!chats.length){el.textContent="Пока пусто";return}chats.slice().reverse().forEach(c=>{let row=document.createElement("div");row.className="thread"+(c.id===active?" active":"");let title=document.createElement("span");title.textContent=c.title;row.onclick=()=>{active=c.id;setMode(c.mode);render();menu(false)};let del=document.createElement("button");del.className="delete";del.textContent="×";del.title="Удалить чат";del.onclick=e=>{e.stopPropagation();if(!confirm("Удалить чат?"))return;chats=chats.filter(x=>x.id!==c.id);if(active===c.id)active=null;saveChats();render()};row.append(title,del);el.append(row)})}
 function textParts(el,str,partial=false){if(window.JVEXFiles)window.JVEXFiles.render(el,str,{partial});else el.textContent=str}
 
 function drawBubble(bubble,m){
  bubble.replaceChildren();
  if(m.image){let photo=document.createElement("img");photo.src=m.image;photo.alt="Фото";bubble.append(photo)}
+ if(m.file?.name){let chip=document.createElement("div");chip.className="attachment-chip";chip.textContent="▤ "+m.file.name;bubble.append(chip)}
  if(m.pending){
    let h=document.createElement("div");h.className="working";
    let spin=document.createElement("span");spin.className="spinner";spin.setAttribute("aria-hidden","true");
@@ -119,10 +124,13 @@ function updateReply(m,thread){
  drawBubble(bubble,m);$("scroll").scrollTop=$("scroll").scrollHeight;
 }
 function quotedCost(){
- let text=$("prompt").value.trim(),el=$("costPreview");
- if(!text&&!image){el.textContent="";return}
- let units=window.JVEXProgress?.estimateCost({mode,text,image:!!image})||1;
- el.textContent="≈ "+units+" "+(units===1?"запрос":"запроса");
+ const text=$("prompt").value.trim(),el=$("costPreview"),button=$("send");
+ const hasMessage=!!text||!!image||!!attachment;
+ if(hasMessage){let units=window.JVEXProgress?.estimateCost({mode,text,image:!!image||!!attachment})||1;el.textContent="≈ "+units+" "+(units===1?"запрос":"запроса")}else el.textContent="";
+ const action=voiceStage==="idle"?(hasMessage?"send":"mic"):(voiceStage==="recording"?"recording":"processing");
+ button.dataset.action=action;button.type=action==="send"?"submit":"button";
+ button.setAttribute("aria-label",action==="send"?"Отправить сообщение":action==="recording"?"Отпусти для отправки":action==="processing"?"Обработка голоса":"Зажми, чтобы говорить");
+ button.disabled=busy||voiceStage==="processing";
 }
 function modal(show){$("backdrop").classList.toggle("open",show);if(show){$("accent").value=cfg.accent;$("dark").checked=cfg.dark;$("provider").value=cfg.provider;$("groqModel").value=cfg.groqModel;menu(false)}}
 const plans=[{name:"JVEX Free",chat:60,code:10,live:true},{name:"JVEX Plus",chat:100,code:20},{name:"JVEX Pro",chat:300,code:60},{name:"JVEX Premium",chat:1000,code:250},{name:"JVEX Code",chat:40,code:200}];
@@ -130,7 +138,6 @@ function plansModal(open){$("plansBackdrop").classList.toggle("open",open);if(!o
 function usageLabel(value){if(!value?.remaining)return;const codeTime=value.resetAt?.code?new Date(value.resetAt.code).toLocaleTimeString("ru-RU",{hour:"2-digit",minute:"2-digit"}):"после первого запроса";$("quotaLabel").textContent="Free · Чат "+value.remaining.chat+"/"+value.limits.chat+" (день) · Code "+value.remaining.code+"/"+value.limits.code+" (5 ч; сброс "+codeTime+")"}
 async function refreshUsage(){try{let res=await fetch(API_BASE+"/api/usage");if(res.ok)usageLabel(await res.json())}catch{}}
 async function checkConnection(){try{const r=await fetch(API_BASE+"/api/health");const data=await r.json();$("state").textContent=r.ok&&data.configured?"JVEX · онлайн":"API не настроен";if(data.providers){const option=$("provider").querySelector('option[value="gemini"]');option.disabled=!data.providers.gemini;$("providerStatus").textContent=data.providers.gemini?"Gemini 3.8 Flash подключена. Code: Qwen → GPT-OSS 120B. Чат: GPT-OSS 20B → Qwen.":"Gemini ещё не подключена: нужен GEMINI_API_KEY в GitHub Secrets. Code: Qwen, чат: GPT-OSS 20B.";if(!data.providers.gemini&&cfg.provider==="gemini"){cfg.provider="auto";$("provider").value="auto";saveCfg()}}}catch{$("state").textContent="Сервер недоступен";$("providerStatus").textContent="Статус моделей не удалось проверить"}}
-function webLabel(){$("web").textContent="◎ Поиск: "+({auto:"авто",on:"вкл",off:"выкл"}[cfg.web])}
 function processPhoto(file){return new Promise((resolve,reject)=>{if(!file||!file.type.startsWith("image/")||file.size>10e6)return reject(Error("Фото должно быть не больше 10 МБ"));let fr=new FileReader();fr.onerror=()=>reject(Error("Ошибка чтения фото"));fr.onload=()=>{let img=new Image();img.onerror=()=>reject(Error("Не удалось открыть фото"));img.onload=()=>{let canvas=document.createElement("canvas"),scale=Math.min(1,1280/Math.max(img.width,img.height));canvas.width=Math.max(1,Math.round(img.width*scale));canvas.height=Math.max(1,Math.round(img.height*scale));canvas.getContext("2d").drawImage(img,0,0,canvas.width,canvas.height);resolve(canvas.toDataURL("image/jpeg",.75))};img.src=fr.result};fr.readAsDataURL(file)})}
 
 async function reveal(answer,thread){
@@ -146,21 +153,21 @@ async function reveal(answer,thread){
 }
 async function send(event){
  event.preventDefault();if(busy)return;
- const value=$("prompt").value.trim();if(!value&&!image)return;
+ const value=$("prompt").value.trim();if(!value&&!image&&!attachment)return;
  let thread=selected();
  if(!thread){thread={id:Date.now()+"-"+Math.random(),title:(value||"Фото").slice(0,45),mode,messages:[]};chats.push(thread);active=thread.id}
- const task={mode:thread.mode,text:value,image:!!image};
- thread.messages.push({role:"user",content:value||"Что на фото?",image});
- saveChats();image=null;preview();$("prompt").value="";quotedCost();
+ const task={mode:thread.mode,text:value,image:!!image||!!attachment};
+ thread.messages.push({role:"user",content:value||(image?"Что на фото?":"Посмотри приложенный файл."),image,file:attachment});
+ saveChats();image=null;attachment=null;preview();$("prompt").value="";quotedCost();
  const phases=window.JVEXProgress?.phases(task)||[{title:"Читаю…",note:"Получен запрос"},{title:"Думаю…",note:"Ожидаю ответ модели"}];
  const answer={role:"assistant",id:"r"+Date.now().toString(36)+Math.random().toString(36).slice(2,8),content:"",pending:true,status:phases[0].title,steps:[phases[0].note]};
- thread.messages.push(answer);render();busy=true;$("send").disabled=true;
+ thread.messages.push(answer);render();busy=true;quotedCost();
  const timers=[];
  function stage(p){if(!answer.pending)return;answer.status=p.title;if(p.note&&!answer.steps.includes(p.note))answer.steps.push(p.note);updateReply(answer,thread)}
  if(phases[1])timers.push(setTimeout(()=>stage(phases[1]),420));
  if(phases[2])timers.push(setTimeout(()=>stage(phases[2]),1600));
  try{
-   const response=await fetch(API_BASE+"/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({messages:thread.messages.filter(m=>m!==answer).slice(-18),mode:thread.mode,search:cfg.web,preference:cfg.provider,groqModel:cfg.groqModel})});
+   const response=await fetch(API_BASE+"/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({messages:thread.messages.filter(m=>m!==answer).slice(-18),mode:thread.mode,preference:cfg.provider,groqModel:cfg.groqModel})});
    const data=await response.json().catch(()=>({}));
    if(!response.ok){if(data.usage)usageLabel(data.usage);throw Error(data.error||"HTTP "+response.status)}
    timers.forEach(clearTimeout);answer.pending=false;
@@ -170,7 +177,7 @@ async function send(event){
  }catch(error){
    answer.pending=false;answer.content="Не удалось получить ответ: "+error.message+"\nПопробуй ещё раз немного позже.";delete answer.partial;updateReply(answer,thread);
  }finally{
-   timers.forEach(clearTimeout);busy=false;$("send").disabled=false;
+   timers.forEach(clearTimeout);busy=false;quotedCost();
    delete answer.pending;delete answer.status;delete answer.steps;delete answer.partial;
    saveChats();updateReply(answer,thread);
  }
