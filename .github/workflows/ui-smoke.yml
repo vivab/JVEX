@@ -4,6 +4,9 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/ui-smoke.yml'
+      - 'scripts/ui-smoke.mjs'
+      - 'assets/voice.js'
+      - 'index.html'
   workflow_dispatch:
 permissions:
   contents: read
