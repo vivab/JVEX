@@ -46,3 +46,16 @@ test("Markdown emphasis and numbered items create text nodes without raw HTML",(
   assert.equal(target.children[1].children.length,2);
  }finally{globalThis.document=prior}
 });
+
+test("Partial animated code cannot be downloaded until complete",()=>{
+ const previous=globalThis.document;
+ globalThis.document={createElement:tag=>new Node(tag),createTextNode:text=>{let n=new Node("#text");n.textContent=text;return n}};
+ const traverse=(n)=>[n,...(n.children||[]).flatMap(traverse)];
+ try{
+  const code="Файл:\n"+mark+"html file=index.html\n<html><body>JVEX</body></html>\n"+mark;
+  const partial=new Node("root");f.render(partial,code,{partial:true});
+  assert.equal(traverse(partial).filter(x=>x.tag==="button").length,0);
+  const full=new Node("root");f.render(full,code,{partial:false});
+  assert.ok(traverse(full).filter(x=>x.tag==="button").length>=2);
+ }finally{globalThis.document=previous}
+});
