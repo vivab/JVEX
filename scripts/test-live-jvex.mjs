@@ -8,6 +8,8 @@ async function verify(){
     const h=await health.json();
     if(!health.ok||!h.ok||!h.configured)throw Error("Health check failed (HTTP "+health.status+")");
     console.log("JVEX API health: OK");
+    console.log("JVEX providers: Groq="+!!h.providers?.groq+", Gemini="+!!h.providers?.gemini+", OpenRouter="+!!h.providers?.openrouter);
+    console.log("JVEX routing: Chat="+h.routing?.chat+", Code="+h.routing?.code+", Vision="+h.routing?.vision);
     const usage=await fetch(base+"/api/usage",{signal:controller.signal});
     if(!usage.ok)throw Error("Quota service failed (HTTP "+usage.status+")");
     const q=await usage.json();
