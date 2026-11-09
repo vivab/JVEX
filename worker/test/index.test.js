@@ -119,7 +119,7 @@ class SqlMock {
     if(sql.startsWith("INSERT INTO code_windows")){
       this.windows.set(args[0],{start:args[1],hits:args[2]});return {toArray:()=>[]};
     }
-    if(sql.startsWith("UPDATE code_windows SET hits=hits+1")){
+    if(sql.startsWith("UPDATE code_windows SET hits=hits+")){
       this.windows.get(args[1]).hits+=args[0];return {toArray:()=>[]};
     }
     if(sql.startsWith("UPDATE code_windows SET hits=MAX")){
@@ -242,7 +242,8 @@ test("SQLite quota rejects a three-unit task when only two remain",async()=>{
  const now=Date.now();const old=Date.now;
  try{
    Date.now=()=>now;
-   for(let i=0;i<8;i++)await guard.fetch(new Request("https://quota.internal/action",{method:"POST",body:JSON.stringify({id:person,action:"reserve",lane:"code",units:1})}));
+   for(let i=0;i<8;i++){Date.now=()=>now+i*61000;const taken=await guard.fetch(new Request("https://quota.internal/action",{method:"POST",body:JSON.stringify({id:person,action:"reserve",lane:"code",units:1})}));assert.equal((await taken.json()).allowed,true)}
+   Date.now=()=>now+8*61000;
    const r=await guard.fetch(new Request("https://quota.internal/action",{method:"POST",body:JSON.stringify({id:person,action:"reserve",lane:"code",units:3})}));
    const data=await r.json();
    assert.equal(data.allowed,false);assert.equal(data.reason,"user");assert.equal(data.remaining.code,2);
