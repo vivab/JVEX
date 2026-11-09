@@ -187,10 +187,55 @@ $("plansSide").onclick=()=>{menu(false);plansModal(true)};$("closePlans").onclic
 $("save").onclick=()=>{cfg.accent=$("accent").value;cfg.dark=$("dark").checked;cfg.provider=$("provider").value;cfg.groqModel=$("groqModel").value;saveCfg();theme();modal(false);refreshUsage()};
 $("export").onclick=()=>{let blob=new Blob([JSON.stringify(chats,null,2)],{type:"application/json"}),url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download="jvex-chats.json";a.click();setTimeout(()=>URL.revokeObjectURL(url),1000)};
 $("composer").onsubmit=send;$("prompt").addEventListener("input",quotedCost);$("prompt").onkeydown=e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();$("composer").requestSubmit()}};document.querySelectorAll("[data-prompt]").forEach(b=>b.onclick=()=>{$("prompt").value=b.dataset.prompt;quotedCost();$("prompt").focus()});
-$("addPhoto").onclick=()=>$("photo").click();$("photo").onchange=async e=>{try{image=await processPhoto(e.target.files[0]);preview()}catch(err){alert(err.message)}};
-$("web").onclick=()=>{cfg.web={auto:"on",on:"off",off:"auto"}[cfg.web];webLabel();saveCfg()};
 
-$("voice").onclick=()=>{let S=window.SpeechRecognition||window.webkitSpeechRecognition;if(!S){alert("Голосовой ввод не поддерживается браузером");return}let r=new S();r.lang="ru-RU";r.onresult=e=>{$("prompt").value+=(" "+e.results[0][0].transcript);quotedCost()};r.onerror=()=>alert("Ошибка распознавания речи");r.start()};
-theme();webLabel();render();quotedCost();refreshUsage();checkConnection();
+function openAttachMenu(open){$("attachMenu").hidden=!open;$("attachToggle").setAttribute("aria-expanded",String(open))}
+$("attachToggle").onclick=()=>openAttachMenu($("attachMenu").hidden);
+$("pickPhoto").onclick=()=>{openAttachMenu(false);$("photo").click()};
+$("pickFile").onclick=()=>{openAttachMenu(false);$("fileInput").click()};
+document.addEventListener("pointerdown",e=>{if(!e.target.closest(".attach-wrap"))openAttachMenu(false)});
+document.addEventListener("keydown",e=>{if(e.key==="Escape")openAttachMenu(false)});
+$("photo").onchange=async e=>{try{if(e.target.files[0]){image=await processPhoto(e.target.files[0]);preview()}}catch(err){alert(err.message)}};
+$("fileInput").onchange=async e=>{
+ const file=e.target.files?.[0];if(!file)return;
+ try{
+  if(!/\.(txt|md|markdown|js|jsx|ts|tsx|html?|css|json|py|java|c|cpp|h|rs|go|php|sql|sh|xml|ya?ml|csv|log|svg)$/i.test(file.name))
+    throw Error("Пока можно прикладывать текстовые файлы и исходный код. PDF и DOCX добавим позже.");
+  if(file.size>15000)throw Error("Файл должен быть не больше 15 КБ.");
+  const body=await file.text();
+  if(body.length>9000)throw Error("Файл больше 9000 символов. Сократи его перед отправкой.");
+  if(body.includes("\u0000"))throw Error("Бинарный файл не поддерживается.");
+  attachment={name:file.name.slice(0,100),text:body};preview();
+ }catch(error){alert(error.message);e.target.value=""}
+};
+const voice=window.JVEXVoice?.create({
+ apiBase:API_BASE,
+ isEnabled:()=>!busy&&voiceStage==="idle"&&!$("prompt").value.trim()&&!image&&!attachment,
+ onState(stage){
+  voiceStage=stage;
+  const status=$("voiceStatus"),labels={permission:"Разреши микрофон…",recording:"Записываю… Отпусти",processing:"Распознаю речь…"};
+  status.textContent=labels[stage]||"";status.hidden=stage==="idle";quotedCost();
+ },
+ onUsage(value){if(value?.remaining)usageLabel(value);refreshUsage()},
+ onText(text){$("prompt").value=($("prompt").value.trim()+" "+text).trim();quotedCost();$("composer").requestSubmit()},
+ onError(error){alert(error.message||"Не удалось записать голос")}
+});
+$("send").addEventListener("pointerdown",event=>{
+ if($("send").dataset.action!=="mic"||!voice)return;
+ event.preventDefault();
+ try{$("send").setPointerCapture(event.pointerId)}catch{}
+ voice.begin();
+});
+$("send").addEventListener("pointerup",()=>{if(voice?.active)voice.end(false)});
+$("send").addEventListener("pointercancel",()=>{if(voice?.active)voice.end(true)});
+$("send").addEventListener("lostpointercapture",()=>{if(voice?.active)voice.end(false)});
+$("send").addEventListener("contextmenu",event=>event.preventDefault());
+$("send").addEventListener("keydown",event=>{
+ if($("send").dataset.action!=="mic"||!voice)return;
+ if(event.key===" "||event.key==="Enter"){event.preventDefault();if(!event.repeat)voice.begin()}
+});
+$("send").addEventListener("keyup",event=>{
+ if(event.key===" "||event.key==="Enter"){if(voice?.active){event.preventDefault();voice.end(false)}}
+});
+theme();render();quotedCost();refreshUsage();checkConnection();
 })();
 </script></body></html>
