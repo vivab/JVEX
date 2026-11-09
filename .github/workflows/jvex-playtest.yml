@@ -1,0 +1,91 @@
+name: Generate and publish playable JVEX games
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/jvex-playtest.yml'
+      - 'scripts/jvex-playtest.mjs'
+  workflow_dispatch:
+permissions:
+  contents: write
+  actions: read
+  pages: write
+  id-token: write
+  statuses: write
+concurrency:
+  group: pages
+  cancel-in-progress: false
+jobs:
+  game-lab:
+    runs-on: ubuntu-latest
+    timeout-minutes: 22
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate test runner
+        run: node --check scripts/jvex-playtest.mjs
+      - name: Install browser for independent game tests
+        run: |
+          npm install --no-save playwright
+          npx playwright install --with-deps chromium
+      - name: Request games from JVEX public API and test them in sandboxed Chromium
+        run: node scripts/jvex-playtest.mjs
+      - name: Store quality report and screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jvex-playable-games-results
+          path: game-lab-results/
+          if-no-files-found: warn
+      - name: Save validated games to repository
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add play/data/
+          if git diff --cached --quiet; then
+            echo "No game output changed"
+          else
+            git commit -m "Publish JVM-tested generated JVEX browser games"
+            git push origin HEAD:main
+          fi
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
+      - id: deployment
+        uses: actions/deploy-pages@v4
+      - name: Check live playable games
+        run: |
+          python3 - <<'PY'
+          import json, pathlib, urllib.request, time
+          root="https://vivab.github.io/JVEX/play/"
+          games=pathlib.Path("play/data")
+          valid=[f.stem for f in games.glob("*.json")]
+          if not valid: raise SystemExit("No games were generated")
+          for i in range(9):
+              try:
+                  with urllib.request.urlopen(root+"?g="+valid[0], timeout=12) as res:
+                      page=res.read().decode()
+                  assert "JVEX • Игры" in page
+                  for name in valid:
+                      with urllib.request.urlopen(root+"data/"+name+".json", timeout=12) as res:
+                          doc=json.load(res)
+                      assert doc.get("id")==name and "<html" in doc.get("html","").lower()
+                  print("LIVE_PAGES_GAMES_OK "+",".join(valid))
+                  break
+              except Exception as exc:
+                  if i==8: raise
+                  print("Waiting for GitHub Pages propagation:",str(exc)[:120])
+                  time.sleep(8)
+          PY
+      - name: Report run
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          JOB_RESULT: ${{ job.status }}
+        run: |
+          if [ "$JOB_RESULT" = "success" ]; then state=success; else state=failure; fi
+          jq -nc --arg state "$state" --arg target "https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" '{state:$state,context:"JVEX / Playable games",description:"Live-generated games browser-tested and deployed",target_url:$target}' >/tmp/jvex-games-status.json
+          curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" -H "Content-Type: application/json" --data-binary @/tmp/jvex-games-status.json "https://api.github.com/repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" >/dev/null
