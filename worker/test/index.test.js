@@ -2,6 +2,7 @@ import {test} from "node:test";
 import assert from "node:assert/strict";
 import app,{githubRepositoryFromMessages,groqCandidates} from "../src/index.js";
 import {QuotaGuard,PLANS,CODE_WINDOW_MS,quotaVerdict} from "../src/quotas.js";
+import {estimateCost,taskLabel} from "../src/complexity.js";
 const person="a".repeat(64);
 const baseEnv={ALLOWED_ORIGIN:"https://vivab.github.io",QUOTA_SALT:"test-unique-salt-for-quota"};
 function mockQuota(){
@@ -10,11 +11,11 @@ function mockQuota(){
     counts,
     idFromName:()=>({}),
     get:()=>({fetch:async(_url,options)=>{
-      const {action,lane}=JSON.parse(options.body);
-      if(action==="reserve"&&counts[lane]>=({chat:60,code:10}[lane]))return Response.json({allowed:false,reason:"user",remaining:{chat:60-counts.chat,code:10-counts.code},limits:{chat:60,code:10}});
-      if(action==="reserve")counts[lane]++;
-      if(action==="refund")counts[lane]=Math.max(0,counts[lane]-1);
-      return Response.json({allowed:true,limits:{chat:60,code:10},remaining:{chat:60-counts.chat,code:10-counts.code},used:{...counts},resetAt:{chat:"2026-11-10T00:00:00Z",code:null}});
+      const {action,lane,units=1}=JSON.parse(options.body);
+      if(action==="reserve"&&counts[lane]+units>({chat:60,code:10}[lane]))return Response.json({allowed:false,reason:"user",remaining:{chat:60-counts.chat,code:10-counts.code},limits:{chat:60,code:10}});
+      if(action==="reserve")counts[lane]+=units;
+      if(action==="refund")counts[lane]=Math.max(0,counts[lane]-units);
+      return Response.json({allowed:true,cost:units,limits:{chat:60,code:10},remaining:{chat:60-counts.chat,code:10-counts.code},used:{...counts},resetAt:{chat:"2026-11-10T00:00:00Z",code:null}});
     }})
   };
 }
@@ -110,19 +111,19 @@ class SqlMock {
       const w=this.windows.get(args[0]);return {toArray:()=>w?[{started_ms:w.start,hits:w.hits}]:[]};
     }
     if(sql.startsWith("INSERT INTO usage")){
-      const k=args.slice(0,3).join("|");this.usage.set(k,(this.usage.get(k)||0)+1);return {toArray:()=>[]};
+      const k=args.slice(0,3).join("|");this.usage.set(k,(this.usage.get(k)||0)+args[3]);return {toArray:()=>[]};
     }
     if(sql.startsWith("UPDATE usage SET hits=MAX")){
-      const k=args.join("|");this.usage.set(k,Math.max(0,(this.usage.get(k)||0)-1));return {toArray:()=>[]};
+      const k=args.slice(1).join("|");this.usage.set(k,Math.max(0,(this.usage.get(k)||0)-args[0]));return {toArray:()=>[]};
     }
     if(sql.startsWith("INSERT INTO code_windows")){
-      this.windows.set(args[0],{start:args[1],hits:1});return {toArray:()=>[]};
+      this.windows.set(args[0],{start:args[1],hits:args[2]});return {toArray:()=>[]};
     }
     if(sql.startsWith("UPDATE code_windows SET hits=hits+1")){
-      this.windows.get(args[0]).hits++;return {toArray:()=>[]};
+      this.windows.get(args[1]).hits+=args[0];return {toArray:()=>[]};
     }
-    if(sql.startsWith("UPDATE code_windows SET hits=hits-1")){
-      this.windows.get(args[0]).hits--;return {toArray:()=>[]};
+    if(sql.startsWith("UPDATE code_windows SET hits=MAX")){
+      this.windows.get(args[1]).hits=Math.max(0,this.windows.get(args[1]).hits-args[0]);return {toArray:()=>[]};
     }
     if(sql.startsWith("DELETE FROM code_windows WHERE subject=")){
       this.windows.delete(args[0]);return {toArray:()=>[]};
@@ -205,4 +206,47 @@ test("Groq 429 falls back to another Groq model before using other providers",as
    assert.equal(r.status,200);assert.match((await r.json()).answer,/Fallback model/);
  });
  assert.deepEqual(tried,["openai/gpt-oss-20b","openai/gpt-oss-120b"]);
+});
+
+test("Complexity charges are predictable and task-specific",()=>{
+ assert.equal(estimateCost({mode:"chat",text:"Привет"}),1);
+ assert.equal(estimateCost({mode:"chat",text:"Что на фото?",image:true}),2);
+ assert.equal(estimateCost({mode:"code",text:"Что такое JavaScript?"}),1);
+ assert.equal(estimateCost({mode:"code",text:"Исправь ошибку в коде"}),2);
+ assert.equal(estimateCost({mode:"code",text:"Создай полноценную игру с нуля"}),3);
+ assert.equal(taskLabel({mode:"code",text:"Сделай игру"}),"Пишу код для игры…");
+ assert.equal(quotaVerdict(8,0,0,"code",150,4,3).reason,"user");
+ assert.equal(quotaVerdict(7,0,0,"code",150,4,3).allowed,true);
+});
+test("Code task uses server-computed 3 units even if browser asks for 1",async()=>{
+ const q=mockQuota();
+ await fakeFetch(async()=>Response.json({model:"openai/gpt-oss-120b",choices:[{message:{content:"Готовый код"}}]}),async()=>{
+   const r=await app.fetch(request([{role:"user",content:"Создай полноценную игру с нуля"}],{mode:"code",cost:1}),useEnv({GROQ_API_KEY:"fake"},q));
+   assert.equal(r.status,200);
+   const data=await r.json();
+   assert.equal(data.cost,3);
+   assert.equal(data.usage.remaining.code,7);
+   assert.equal(q.counts.code,3);
+ });
+});
+test("Failed complex Code request refunds all units",async()=>{
+ const q=mockQuota();
+ await fakeFetch(async()=>Response.json({error:{message:"rate limit"}},{status:429}),async()=>{
+   const r=await app.fetch(request([{role:"user",content:"Создай полноценную игру с нуля"}],{mode:"code"}),useEnv({GROQ_API_KEY:"fake"},q));
+   assert.equal(r.status,503);
+ });
+ assert.equal(q.counts.code,0);
+});
+test("SQLite quota rejects a three-unit task when only two remain",async()=>{
+ const sql=new SqlMock(),guard=new QuotaGuard({storage:{sql,transactionSync:fn=>fn()}},{});
+ const now=Date.now();const old=Date.now;
+ try{
+   Date.now=()=>now;
+   for(let i=0;i<8;i++)await guard.fetch(new Request("https://quota.internal/action",{method:"POST",body:JSON.stringify({id:person,action:"reserve",lane:"code",units:1})}));
+   const r=await guard.fetch(new Request("https://quota.internal/action",{method:"POST",body:JSON.stringify({id:person,action:"reserve",lane:"code",units:3})}));
+   const data=await r.json();
+   assert.equal(data.allowed,false);assert.equal(data.reason,"user");assert.equal(data.remaining.code,2);
+   const ok=await guard.fetch(new Request("https://quota.internal/action",{method:"POST",body:JSON.stringify({id:person,action:"reserve",lane:"code",units:2})}));
+   assert.equal((await ok.json()).remaining.code,0);
+ }finally{Date.now=old}
 });
