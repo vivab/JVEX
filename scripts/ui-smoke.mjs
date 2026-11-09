@@ -1,0 +1,55 @@
+import assert from "node:assert/strict";
+import {chromium} from "playwright";
+import {mkdir} from "node:fs/promises";
+const errors=[],requests=[];
+await mkdir("ui-results",{recursive:true});
+const browser=await chromium.launch({headless:true,args:["--no-sandbox","--use-fake-ui-for-media-stream","--use-fake-device-for-media-stream"]});
+const context=await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true,permissions:["microphone"]});
+const page=await context.newPage();
+page.on("pageerror",e=>errors.push(e.message));
+const json=(v)=>JSON.stringify(v);
+await page.route("**/api/health",route=>route.fulfill({status:200,contentType:"application/json",body:json({ok:true,configured:true,providers:{groq:true,gemini:false,openrouter:false}})}));
+await page.route("**/api/usage",route=>route.fulfill({status:200,contentType:"application/json",body:json({remaining:{chat:60,code:10},limits:{chat:60,code:10},resetAt:{chat:null,code:null}})}));
+await page.route("**/api/transcribe",async route=>{
+ requests.push("transcribe");
+ await route.fulfill({status:200,contentType:"application/json",body:json({text:"Привет, это мой голосовой вопрос",usage:{remaining:{chat:59,code:10},limits:{chat:60,code:10}}})});
+});
+await page.route("**/api/chat",async route=>{
+ let data=route.request().postDataJSON();
+ requests.push({chat:data});
+ await route.fulfill({status:200,contentType:"application/json",body:json({answer:"Привет! Это тестовый ответ JVEX.",cost:1,sources:[],usage:{remaining:{chat:57,code:10},limits:{chat:60,code:10}}})});
+});
+try{
+ await page.goto("http://127.0.0.1:8123/",{waitUntil:"domcontentloaded"});
+ await page.waitForSelector("#send[data-action='mic']");
+ assert.equal(await page.locator("#web").count(),0,"Search toggle must be absent");
+ assert.equal(await page.locator("#voice").count(),0,"Separate voice toggle must be absent");
+ await page.locator("#attachToggle").click();
+ assert.equal(await page.locator("#attachMenu").isVisible(),true,"Plus opens attachment menu");
+ assert.equal(await page.locator("#pickFile").isVisible(),true,"File option is present");
+ await page.locator("#fileInput").setInputFiles({name:"test.js",mimeType:"text/javascript",buffer:Buffer.from("console.log('JVEX');")});
+ assert.equal(await page.locator(".preview .attachment-chip").isVisible(),true);
+ assert.equal(await page.locator("#send").getAttribute("data-action"),"send");
+ await page.locator(".preview .attachment-chip button").click();
+ assert.equal(await page.locator("#send").getAttribute("data-action"),"mic");
+ await page.locator("#prompt").fill("Привет, JVEX!");
+ assert.equal(await page.locator("#send").getAttribute("type"),"submit");
+ await page.locator("#send").click();
+ await page.waitForFunction(()=>document.querySelector("#dialog")?.textContent?.includes("Это тестовый ответ JVEX"),{timeout:13000});
+ assert.ok(requests.some(r=>r.chat?.messages?.at(-1)?.content==="Привет, JVEX!"),"Typed request was sent");
+ await page.screenshot({path:"ui-results/mobile-chat.png",fullPage:true});
+ await page.locator("#prompt").fill("");
+ await page.waitForSelector("#send[data-action='mic']");
+ const btn=page.locator("#send");
+ await btn.dispatchEvent("pointerdown",{pointerId:12,pointerType:"touch",bubbles:true});
+ await page.waitForTimeout(600);
+ await btn.dispatchEvent("pointerup",{pointerId:12,pointerType:"touch",bubbles:true});
+ await page.waitForFunction(()=>document.querySelector("#dialog")?.textContent?.includes("мой голосовой вопрос"),{timeout:18000});
+ assert.ok(requests.includes("transcribe"),"Whisper endpoint was called");
+ assert.ok(requests.some(r=>r.chat?.messages?.at(-1)?.content==="Привет, это мой голосовой вопрос"),"Transcription was auto-sent as chat");
+ await page.screenshot({path:"ui-results/mobile-voice.png",fullPage:true});
+ assert.deepEqual(errors,[],"No client-side JavaScript errors");
+ console.log("JVEX MOBILE COMPOSER: PASS");
+ console.log("JVEX HOLD-TO-TALK (fake browser microphone; mocked transcription): PASS");
+ console.log("JVEX AUTOSEND: PASS");
+}finally{await browser.close()}
