@@ -10,7 +10,7 @@ function safePath(raw,fallback){
 }
 function fileName(header,n,preceding){
  const lang=header.trim().split(/\s+/)[0].toLowerCase();
- let match=header.match(/(?:filename?|path)\s*[:=]\s*(\S+)/i);
+ let match=header.match(/(?:file(?:name)?|path)\s*[:=]\s*(\S+)/i);
  if(!match)match=header.match(/^(?:[\w+#-]+)\s+((?:[\w.-]+\/)*[\w.-]+\.[a-z0-9]{1,10})$/i);
  if(!match&&/^(?:[\w.-]+\/)*[\w.-]+\.[a-z0-9]{1,10}$/i.test(header.trim()))match=[header,header.trim()];
  if(!match)match=String(preceding||"").split("\n").slice(-2).join("\n").match(/(?:^|\n)(?:#+\s*|файл:\s*|file:\s*)([\w.-]+(?:\/[\w.-]+)*\.[a-z0-9]{1,10})\s*$/i);
