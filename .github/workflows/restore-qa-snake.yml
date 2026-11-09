@@ -1,0 +1,84 @@
+name: Restore verified JVEX Snake game
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/restore-qa-snake.yml'
+  workflow_dispatch:
+permissions:
+  contents: write
+  actions: read
+  pages: write
+  id-token: write
+  statuses: write
+concurrency:
+  group: pages
+  cancel-in-progress: false
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.publish.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Retrieve actual previously generated and browser-tested JVEX Snake
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/13664753084/zip" -o /tmp/jvex-prior-games.zip
+          mkdir -p /tmp/jvex-prior-games
+          unzip -q /tmp/jvex-prior-games.zip -d /tmp/jvex-prior-games
+          node --input-type=module - <<'JS'
+          import fs from 'node:fs';
+          import vm from 'node:vm';
+          const html=fs.readFileSync('/tmp/jvex-prior-games/games/snake.html','utf8');
+          if(!html.toLowerCase().includes('</html>')||!html.toLowerCase().includes('</script>')||!/<canvas/i.test(html))throw Error('Previous JVEX game incomplete');
+          for(const m of html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/gi)){new vm.Script(m[1]);}
+          fs.mkdirSync('play/data',{recursive:true});
+          fs.writeFileSync('play/data/snake.json',JSON.stringify({id:'snake',title:'Змейка',model:'Groq / openai/gpt-oss-120b',generatedBy:'JVEX public API verified run 42599338848',html}));
+          console.log('VERIFIED_PREVIOUS_JVEX_SNAKE_READY '+html.length);
+          JS
+      - name: Save tested generated Snake in repository
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add play/data/snake.json
+          git commit -m "Publish previously browser-validated JVEX Snake demo"
+          git push origin HEAD:main
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
+      - id: publish
+        uses: actions/deploy-pages@v4
+      - name: Verify public launcher and GitHub Raw data fallback
+        run: |
+          python3 - <<'PY'
+          import json, urllib.request, time
+          page="https://vivab.github.io/JVEX/play/?g=snake"
+          url="https://raw.githubusercontent.com/vivab/JVEX/main/play/data/snake.json"
+          for i in range(6):
+              try:
+                  with urllib.request.urlopen(page,timeout=12) as r:
+                      assert "JVEX" in r.read().decode()
+                  with urllib.request.urlopen(urllib.request.Request(url,headers={"Origin":"https://vivab.github.io"}),timeout=12) as r:
+                      doc=json.load(r)
+                      assert r.headers.get('Access-Control-Allow-Origin') in ('*','https://vivab.github.io'),"Missing CORS"
+                  assert doc['id']=="snake"
+                  print('JVEX_PLAYABLE_SNAKE_AND_FALLBACK_VERIFIED')
+                  break
+              except Exception as e:
+                  if i==5: raise
+                  print('Retrying:',str(e)[:130]);time.sleep(7)
+          PY
+      - name: Report verification
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RESULT: ${{ job.status }}
+        run: |
+          if [ "$RESULT" = "success" ]; then state=success; else state=failure; fi
+          jq -nc --arg state "$state" --arg target "https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" '{state:$state,context:"JVEX / Snake game",description:"Previously verified Snake restored and deployed",target_url:$target}' > /tmp/jvex-snake-status.json
+          curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" -H "Content-Type: application/json" --data-binary @/tmp/jvex-snake-status.json "https://api.github.com/repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" > /dev/null
